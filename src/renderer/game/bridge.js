@@ -1,0 +1,328 @@
+// High-level control of the game for the race logic: load a level by id, freeze everyone at the
+// start line, detect restarts / finishes, and keep remote puppets in sync with the local world.
+
+import { on as onHook, state as hookState } from '../hooks.js';
+import { Game } from './locate.js';
+import { computeLayout, hookCharacterEvents, characterTree, bodiesOf } from './character.js';
+import { Puppet, makeContactFilter } from './puppets.js';
+
+const listeners = {};
+function emit(evt, ...a) { for (const f of listeners[evt] || []) { try { f(...a); } catch (e) { console.error('[hwmp] bridge listener', evt, e); } } }
+
+export const bridge = {
+  ready: false,
+  frozen: false,
+  raceMode: false,
+  collisions: false,
+  ghostAlpha: 0.45,
+  session: null,         // current race-eligible session (not replay/menu)
+  sessionSerial: 0,      // increments on every session start (restarts included)
+  layout: [],
+  puppets: new Map(),    // peerId -> Puppet
+  puppetSpecs: new Map(),// peerId -> { spec, events: [] } used to rebuild after local restarts
+  now: () => performance.now(),
+  pendingLoad: null,
+
+  on(evt, fn) { (listeners[evt] ||= []).push(fn); return () => { listeners[evt] = listeners[evt].filter((f) => f !== fn); }; },
+
+  screen() {
+    const app = Game.app;
+    if (!app) return 'loading';
+    if (app.editor) return 'editor';
+    if (app.sessionController) return this.session ? 'session' : 'loading-level';
+    if (app.mainMenu) return 'menu';
+    return 'other';
+  },
+
+  characterNames() { return (Game.Settings?.characterNames || []).slice(); },
+
+  async featuredLevels() {
+    const F = Game.FeaturedLevels;
+    if (!F) return [];
+    const list = (await F.featuredLevels()) || [];
+    return list.map((l) => ({ id: Number(l.id), name: String(l.name || ''), author: String(l.author_name || ''), character: Number(l.character) || 0, forceChar: !!l.forceChar }));
+  },
+
+  /** Leaves whatever the player is doing and loads `levelId`; resolves once the session starts. */
+  loadLevel(levelId, { characterIndex = 1, timeoutMs = 45000 } = {}) {
+    const app = Game.app;
+    if (!app) return Promise.reject(new Error('Game is still starting'));
+    if (app.editor) return Promise.reject(new Error('Close the level editor to join the race'));
+    if (this.pendingLoad) this.pendingLoad.reject(new Error('superseded'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { if (this.pendingLoad === p) { this.pendingLoad = null; reject(new Error('Timed out loading the level')); } }, timeoutMs);
+      const p = {
+        levelId: Number(levelId),
+        characterIndex,
+        resolve: (s) => { clearTimeout(timer); resolve(s); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      };
+      this.pendingLoad = p;
+      try {
+        if (app.sessionController) app.sessionController.returnToMainMenu();
+        wrapLevelLoadComplete(app);
+        app.openDeepLink({ kind: 'level', id: p.levelId });
+        if (app.mainMenu) { // a popup blocked the deep link; go around it
+          app.closeMainMenu();
+          app.loadLevelByID(p.levelId);
+        }
+      } catch (e) {
+        this.pendingLoad = null;
+        p.reject(e);
+      }
+    });
+  },
+
+  returnToMenu() {
+    const app = Game.app;
+    if (app && app.sessionController) app.sessionController.returnToMainMenu();
+  },
+
+  restart() {
+    const app = Game.app;
+    const ctl = app && app.sessionController;
+    if (ctl && this.session) ctl.restartLevel();
+  },
+
+  setFrozen(v) { this.frozen = !!v; },
+
+  localCharacterInfo() {
+    const S = Game.Settings;
+    const s = this.session;
+    return { characterIndex: S ? S.characterIndex : 1, hideVehicle: !!(S && S.hideVehicle), layout: this.layout.slice(), levelId: S ? S.levelIndex : 0, version: s ? s.version : 0 };
+  },
+
+  // ---- puppets -------------------------------------------------------------------------------
+
+  /** spec: { characterIndex, hideVehicle, layout } */
+  setPuppet(peerId, spec) {
+    this.removePuppet(peerId);
+    this.puppetSpecs.set(peerId, { spec, events: [] });
+    if (this.session) this.spawnPuppet(peerId);
+  },
+
+  spawnPuppet(peerId) {
+    const entry = this.puppetSpecs.get(peerId);
+    if (!entry || !this.session || !this.session.m_world) return null;
+    const p = new Puppet(this.session, entry.spec);
+    p.alpha = this.collisions ? 1 : this.ghostAlpha;
+    try {
+      p.spawn();
+    } catch (e) {
+      console.error('[hwmp] failed to spawn puppet', e);
+      try { p.destroy(true); } catch {}
+      return null;
+    }
+    this.puppets.set(peerId, p);
+    for (const ev of entry.events) p.applyEvent(ev.path, ev.method, ev.args);
+    return p;
+  },
+
+  removePuppet(peerId, forget = true) {
+    const p = this.puppets.get(peerId);
+    if (p) { p.destroy(!!(this.session && this.session.m_world)); this.puppets.delete(peerId); }
+    if (forget) this.puppetSpecs.delete(peerId);
+  },
+
+  clearPuppets() { for (const id of [...this.puppetSpecs.keys()]) this.removePuppet(id); },
+
+  /** Remote player restarted: rebuild their puppet fresh (intact body, at the start). */
+  resetPuppet(peerId) {
+    const entry = this.puppetSpecs.get(peerId);
+    if (!entry) return;
+    entry.events = [];
+    this.removePuppet(peerId, false);
+    if (this.session) this.spawnPuppet(peerId);
+  },
+
+  puppetState(peerId, t, data) {
+    const p = this.puppets.get(peerId);
+    if (p) p.pushSnapshot(t, data);
+  },
+
+  puppetEvent(peerId, path, method, args) {
+    const entry = this.puppetSpecs.get(peerId);
+    if (!entry) return;
+    if (entry.events.length < 256) entry.events.push({ path, method, args });
+    const p = this.puppets.get(peerId);
+    if (p) p.applyEvent(path, method, args);
+  },
+
+  setCollisions(on) {
+    this.collisions = !!on;
+    for (const p of this.puppets.values()) p.setAlpha(this.collisions ? 1 : this.ghostAlpha);
+  },
+};
+
+// ---- hooks into game classes -------------------------------------------------------------------
+
+function isRaceEligible(session) {
+  return session && !session.isReplay && !session.isMenu && !session.isEditorTest;
+}
+
+function markLocalShapes(session) {
+  const ch = session.character;
+  if (!ch) return;
+  for (const [, c] of characterTree(ch)) {
+    for (const k of Object.keys(c)) {
+      const b = c[k];
+      if (b && b.m_xf && typeof b.GetShapeList === 'function' && !b.__hwmpPuppet) {
+        for (let s = b.GetShapeList(); s; s = s.m_next) s.__hwmpLocal = true;
+      }
+    }
+  }
+}
+
+function installContactFilter(session) {
+  const world = session.m_world;
+  if (!world || world.__hwmpFilter) return;
+  const def = world.m_contactFilter;
+  world.m_contactFilter = makeContactFilter(def, {
+    isLocalShape: (s) => s.__hwmpLocal === true,
+    collisions: () => bridge.collisions,
+  });
+  world.__hwmpFilter = true;
+}
+
+let levelLoadWrapped = new WeakSet();
+function wrapLevelLoadComplete(app) {
+  if (levelLoadWrapped.has(app) || typeof app.levelLoadCompleteBind !== 'function') return;
+  levelLoadWrapped.add(app);
+  const orig = app.levelLoadCompleteBind;
+  app.levelLoadCompleteBind = function (ev) {
+    const r = orig.call(this, ev);
+    // The loader reported an error: the game went back to the main menu.
+    if (bridge.pendingLoad && app.mainMenu && !app.sessionController) {
+      const p = bridge.pendingLoad;
+      bridge.pendingLoad = null;
+      p.reject(new Error('Level could not be loaded (not found or offline)'));
+    }
+    return r;
+  };
+}
+
+function wrap(proto, name, make) {
+  const orig = proto[name];
+  if (typeof orig !== 'function' || orig.__hwmpWrapped) return;
+  const w = make(orig);
+  w.__hwmpWrapped = true;
+  proto[name] = w;
+}
+
+function installGameHooks() {
+  const SessionP = Game.Session.prototype;
+  const CtlP = Game.SessionController.prototype;
+
+  wrap(SessionP, 'start', (orig) => function (...a) {
+    const r = orig.apply(this, a);
+    if (isRaceEligible(this)) onSessionStart(this);
+    return r;
+  });
+  wrap(SessionP, 'die', (orig) => function (...a) {
+    if (this === bridge.session) onSessionEnd(this);
+    return orig.apply(this, a);
+  });
+  wrap(SessionP, 'levelComplete', (orig) => function (...a) {
+    const r = orig.apply(this, a);
+    if (this === bridge.session) emit('levelComplete', this);
+    return r;
+  });
+  for (const name of ['run30fps', 'run60fps']) {
+    wrap(SessionP, name, (orig) => function (...a) {
+      if (bridge.frozen && this === bridge.session) return undefined;
+      return orig.apply(this, a);
+    });
+  }
+  // Race mode: skip the character menu (character comes from our lobby) ...
+  wrap(CtlP, 'begin', (orig) => function (...a) {
+    const p = bridge.pendingLoad;
+    if (p && !this.replayDataObject && this.levelDataObject && Number(this.levelDataObject.id) === p.levelId) {
+      const S = Game.Settings;
+      S.hideVehicle = false;
+      if (!this.levelDataObject.forceChar) S.characterIndex = p.characterIndex;
+      this.incrementPlays = true;
+      return this.loadSession();
+    }
+    return orig.apply(this, a);
+  });
+  // ... and don't pop the end-of-level menu while racing (players keep watching the race).
+  wrap(CtlP, 'sessionCompleteHandler', (orig) => function (...a) {
+    if (bridge.raceMode && this.session === bridge.session) {
+      try { this.session.removeEventListener(a[0]?.type, this.sessionCompleteHandlerBind); } catch {}
+      return undefined;
+    }
+    return orig.apply(this, a);
+  });
+  wrap(CtlP, 'returnToMainMenu', (orig) => function (...a) {
+    const r = orig.apply(this, a);
+    emit('exitedToMenu');
+    return r;
+  });
+
+  onHook('preStep', (world) => {
+    const s = bridge.session;
+    if (!s || world !== s.m_world || !bridge.puppets.size) return;
+    const now = bridge.now();
+    for (const p of bridge.puppets.values()) p.apply(now);
+  });
+  onHook('postStep', (world) => {
+    const s = bridge.session;
+    if (!s || world !== s.m_world) return;
+    emit('step', s);
+  });
+  onHook('render', () => {
+    const s = bridge.session;
+    if (!s || !bridge.puppets.size) { emit('frame', s); return; }
+    const now = bridge.now();
+    for (const p of bridge.puppets.values()) { p.apply(now); p.paint(); }
+    emit('frame', s);
+  });
+}
+
+function onSessionStart(session) {
+  bridge.session = session;
+  bridge.sessionSerial++;
+  const ch = session.character;
+  bridge.layout = computeLayout(ch);
+  markLocalShapes(session);
+  installContactFilter(session);
+  if (!ch.__hwmpHooked) {
+    ch.__hwmpHooked = true;
+    hookCharacterEvents(ch, (path, method, args) => {
+      markLocalShapes(session);
+      emit('localEvent', path, method, args);
+    });
+  }
+  for (const id of bridge.puppetSpecs.keys()) bridge.spawnPuppet(id);
+  const p = bridge.pendingLoad;
+  const S = Game.Settings;
+  if (p && S && Number(S.levelIndex) === p.levelId) { bridge.pendingLoad = null; p.resolve(session); }
+  emit('sessionStart', session, bridge.sessionSerial);
+}
+
+function onSessionEnd(session) {
+  for (const id of [...bridge.puppets.keys()]) bridge.removePuppet(id, false);
+  bridge.session = null;
+  emit('sessionEnd', session);
+}
+
+/** Resolves once the game's classes are available and hooks are installed. */
+export function initBridge() {
+  return new Promise((resolve) => {
+    const tryInit = () => {
+      if (bridge.ready) return resolve(bridge);
+      if (Game.Settings && Game.Session && Game.SessionController && Game.ContentLoader && hookState) {
+        installGameHooks();
+        bridge.ready = true;
+        // A session may already be running if we initialized late.
+        const s = Game.session;
+        if (s && isRaceEligible(s)) onSessionStart(s);
+        return resolve(bridge);
+      }
+      setTimeout(tryInit, 100);
+    };
+    tryInit();
+  });
+}
+
+export { bodiesOf };

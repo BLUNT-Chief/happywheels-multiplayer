@@ -1,0 +1,25 @@
+{
+  "name": "happywheels-multiplayer",
+  "productName": "Happy Wheels Multiplayer",
+  "version": "0.1.0",
+  "description": "Multiplayer racing mod for Happy Wheels (Steam)",
+  "main": "src/main/index.js",
+  "private": true,
+  "license": "MIT",
+  "author": "HWMP",
+  "scripts": {
+    "build:renderer": "node scripts/build-renderer.js",
+    "start": "npm run build:renderer && electron .",
+    "dev": "npm run build:renderer && electron . --hwmp-dev",
+    "dist": "npm run build:renderer && electron-builder --win --publish never",
+    "release": "npm run build:renderer && electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "electron": "44.4.1",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2"
+  }
+}
