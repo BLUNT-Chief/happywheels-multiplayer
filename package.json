@@ -14,8 +14,7 @@
     "start": "node scripts/build-renderer.js && electron .",
     "dev": "node scripts/build-renderer.js && electron . --hwmp-dev",
     "icon": "electron scripts/make-icon.js",
-    "dist": "node scripts/build-renderer.js --prod && electron-builder --win --publish never",
-    "release": "node scripts/build-renderer.js --prod && electron-builder --win --publish always"
+    "dist": "node scripts/build-renderer.js --prod && electron-builder --win --publish never"
   },
   "dependencies": {
     "electron-updater": "6.8.9"

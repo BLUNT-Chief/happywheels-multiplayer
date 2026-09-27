@@ -3,6 +3,9 @@
 #
 #   npm version patch        # bumps package.json and creates the vX.Y.Z tag
 #   git push --follow-tags   # triggers this workflow
+#
+# The release is created in one step after the build (not by electron-builder's parallel uploads,
+# which created a second release per tag and broke update downloads).
 name: Release
 
 on:
@@ -33,11 +36,24 @@ jobs:
 
       - run: npm ci
 
-      - name: Build and publish
-        run: npm run release
+      - name: Build installer
+        run: npm run dist
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Optional code signing (removes the SmartScreen warning). Add these repository secrets
           # to enable it: a base64 .pfx certificate and its password.
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          installer="dist/HappyWheelsMultiplayer-Setup-${version}.exe"
+          for f in "$installer" "$installer.blockmap" dist/latest.yml; do
+            [ -f "$f" ] || { echo "missing build output: $f"; exit 1; }
+          done
+          grep -q "^version: ${version}$" dist/latest.yml || { echo "latest.yml is not for ${version}"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" "$installer" "$installer.blockmap" dist/latest.yml \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
