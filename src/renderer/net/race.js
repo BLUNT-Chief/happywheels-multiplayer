@@ -6,6 +6,8 @@ import { T, encodeState, decodeState, encodeCtrl, decodeCtrl, encodePing, decode
 import { Clock } from './clock.js';
 import { sampleBodies, MAX_BODIES } from '../game/character.js';
 
+const MAX_RACERS = 16;
+
 const COUNTDOWN_MS = 3500;
 const READY_TIMEOUT_MS = 30000;
 const PREF_KEY = 'hwmp.prefs';
@@ -37,6 +39,8 @@ export class Multiplayer {
     this.samples = new Float64Array(MAX_BODIES * 6);
     this.localSerial = 0;
     this.finished = false;
+    this.rejoining = false;   // next local spawn asks the others to describe their racers again
+    this.localSpawn = null;   // our last spawn message this race (re-sent to rejoining players)
     this.goTimer = null;
     this.readyTimer = null;
     this.graceTimer = null;
@@ -47,6 +51,8 @@ export class Multiplayer {
   // ---- plumbing ------------------------------------------------------------------------------
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   changed() { for (const fn of this.listeners) { try { fn(this); } catch (e) { log.error(e); } } }
+  notify(evt) { for (const fn of this.listeners) { try { fn(this, evt); } catch {} } }
+
   toast(text, kind = 'info') {
     (kind === 'error' ? log.warn : log.info)('toast:', text);
     for (const fn of this.listeners) { try { fn(this, { toast: text, kind }); } catch {} }
@@ -341,6 +347,64 @@ export class Multiplayer {
     this.changed();
   }
 
+  /** Can we get into the race that is running now? Late joiners and players who left both can. */
+  canJoinRace() {
+    const r = this.race;
+    if (!r || !this.self || this.bridge.raceMode || this.finished) return false;
+    if (!['loading', 'countdown', 'racing'].includes(this.phase) || r.finishes[this.self.id] != null) return false;
+    // Not driving right now: we left (DNF), left the lobby and came back, or joined the lobby late.
+    return r.participants.includes(this.self.id) || r.participants.length < MAX_RACERS;
+  }
+
+  /** Into the running race. The race clock still counts from everyone's GO. */
+  joinRace() {
+    if (!this.canJoinRace()) return;
+    const r = this.race;
+    const late = !r.participants.includes(this.self.id);
+    if (late) r.participants = [...r.participants, this.self.id];
+    r.dnf.delete(this.self.id);
+    const me = this.players.get(this.self.id);
+    if (me) me.status = 'loading';
+    this.sendHost({ t: 'joinRace', race: r.id });
+    this.rejoining = true;
+    this.playedLevels.add(r.level.id);
+    const b = this.bridge;
+    b.raceMode = true;
+    b.setCollisions(r.collisions);
+    b.setFrozen(true); // released at GO, or right away on spawn if GO has passed
+    log.info(late ? 'joining the race in progress' : 'rejoining the race');
+    b.loadLevel(r.level.id, { characterIndex: r.forceCharacter || this.prefs.character }).catch((e) => {
+      if (e.message === 'superseded' || this.race !== r) return;
+      this.toast(`Could not load the level: ${e.message}`, 'error');
+      this.sendAll({ t: 'dnf', race: r.id });
+      this.onCtrl(this.self.id, { t: 'dnf', race: r.id });
+      b.raceMode = false; b.setFrozen(false);
+    });
+    this.changed();
+  }
+
+  /** Race state from the host's lobby snapshot (for players who join the lobby mid-race). */
+  raceFromSnapshot(s) {
+    if (!s || !V.int(s.id, 1, 65535) || !s.level || !V.int(s.level.id, 1, 2e9) || !Array.isArray(s.participants) || !s.participants.every(V.id)) return null;
+    const ids = (a) => (Array.isArray(a) ? a.filter(V.id).slice(0, 32) : []);
+    const race = {
+      id: s.id,
+      level: { id: s.level.id, name: cleanText(s.level.name, 80), forceChar: !!s.level.forceChar },
+      participants: s.participants.slice(0, MAX_RACERS),
+      goAt: V.num(s.goAt) ? s.goAt : null,
+      finishes: {},
+      dnf: new Set(ids(s.dnf)),
+      deadline: V.num(s.deadline) ? s.deadline : null,
+      collisions: !!s.collisions,
+      forceCharacter: V.int(s.forceCharacter, 0, 11) ? s.forceCharacter : 0,
+      skipVotes: new Set(ids(s.skipVotes)),
+    };
+    if (s.finishes && typeof s.finishes === 'object') {
+      for (const [id, ms] of Object.entries(s.finishes)) if (V.id(id) && V.int(ms, 0, 36e5)) race.finishes[id] = ms;
+    }
+    return race;
+  }
+
   sendChat(text) {
     const clean = cleanText(text, 200).trim();
     if (!clean || !this.lobby) return;
@@ -361,6 +425,8 @@ export class Multiplayer {
     clearTimeout(this.goTimer); clearTimeout(this.readyTimer); clearTimeout(this.graceTimer);
     this.race = null;
     this.finished = false;
+    this.rejoining = false;
+    this.localSpawn = null;
     this.bridge.raceMode = false;
     this.bridge.setFrozen(false);
     if (clearPuppets) this.bridge.clearPuppets();
@@ -417,19 +483,21 @@ export class Multiplayer {
   }
 
   onLocalSessionStart(session, serial) {
-    if (!this.race || !this.self) return;
+    if (!this.race || !this.self || !this.bridge.raceMode) return;
     this.localSerial = serial;
     const info = this.bridge.localCharacterInfo();
     if (Number(info.levelId) !== Number(this.race.level.id)) return;
     // If we (re)started after GO there is nothing to wait for.
     if (this.race.goAt != null && this.clock.now() >= this.race.goAt) this.bridge.setFrozen(false);
     const msg = { t: 'spawn', race: this.race.id, serial: serial & 0xffff, character: info.characterIndex, hideVehicle: info.hideVehicle, layout: info.layout };
-    this.sendAll(msg);
+    this.localSpawn = msg;
+    this.sendAll(this.rejoining ? { ...msg, rejoin: true } : msg);
+    this.rejoining = false;
     this.onCtrl(this.self.id, msg);
   }
 
   onLocalStep() {
-    if (!this.race || !this.self || this.bridge.frozen) return;
+    if (!this.race || !this.self || !this.bridge.raceMode || this.bridge.frozen) return;
     const s = this.bridge.session;
     if (!s || !s.character) return;
     const peers = this.peers();
@@ -441,12 +509,12 @@ export class Multiplayer {
   }
 
   onLocalEvent(path, method, args) {
-    if (!this.race) return;
+    if (!this.race || !this.bridge.raceMode) return;
     this.sendAll({ t: 'event', race: this.race.id, serial: this.localSerial & 0xffff, path, method, args: args.map((a) => (a === undefined ? null : a)) });
   }
 
   onLocalFinish() {
-    if (!this.race || this.finished || this.race.goAt == null) return;
+    if (!this.race || !this.bridge.raceMode || this.finished || this.race.goAt == null) return;
     if (!this.race.participants.includes(this.self.id)) return;
     this.finished = true;
     const ms = Math.max(0, Math.round(this.clock.now() - this.race.goAt));
@@ -466,7 +534,7 @@ export class Multiplayer {
     this.bridge.raceMode = false;
     this.bridge.setFrozen(false);
     this.bridge.clearPuppets();
-    this.toast('You left the race');
+    this.toast('You left the race. Open MULTIPLAYER (F2) to get back in.');
   }
 
   // ---- inbound ---------------------------------------------------------------------------------
@@ -524,6 +592,7 @@ export class Multiplayer {
         if (V.int(m.character, 1, 11)) p.character = m.character;
         if (V.bool(m.ready)) p.ready = m.ready;
         const isNew = !player;
+        if (isNew && this.race && ['loading', 'countdown', 'racing'].includes(this.phase)) p.status = 'spectating';
         this.players.set(from, p);
         if (isNew) log.info(`hello from ${p.name} (${from}), mod ${p.modVersion || '?'}, game ${p.gameVersion || '?'}`);
         if (isNew) {
@@ -554,7 +623,7 @@ export class Multiplayer {
       case 'load': {
         if (!fromHost && !self) return;
         if (!V.int(m.race, 1, 65535) || !m.level || !V.int(m.level.id, 1, 2e9) || !Array.isArray(m.participants) || !m.participants.every(V.id)) return;
-        this.onLoad({ race: m.race, level: { id: m.level.id, name: cleanText(m.level.name, 80), forceChar: !!m.level.forceChar }, collisions: !!m.collisions, forceCharacter: V.int(m.forceCharacter, 0, 11) ? m.forceCharacter : 0, participants: m.participants.slice(0, 16) });
+        this.onLoad({ race: m.race, level: { id: m.level.id, name: cleanText(m.level.name, 80), forceChar: !!m.level.forceChar }, collisions: !!m.collisions, forceCharacter: V.int(m.forceCharacter, 0, 11) ? m.forceCharacter : 0, participants: m.participants.slice(0, MAX_RACERS) });
         return;
       }
       case 'start': {
@@ -568,6 +637,7 @@ export class Multiplayer {
         if (!self) {
           this.peerSerial.set(from, m.serial);
           this.bridge.setPuppet(from, { characterIndex: m.character, hideVehicle: !!m.hideVehicle, layout: m.layout });
+          if (m.rejoin && this.localSpawn && this.localSpawn.race === race.id && this.bridge.session) this.sendTo(from, this.localSpawn);
         }
         if (player.status === 'loading' || player.status === 'spectating') player.status = this.phase === 'racing' ? 'racing' : 'ready';
         if (this.isHost) { this.checkRaceProgress(); this.broadcastLobby(); }
@@ -615,10 +685,30 @@ export class Multiplayer {
         }
         if (Array.isArray(m.dnf)) for (const id of m.dnf) if (V.id(id)) race.dnf.add(id);
         this.phase = 'results';
+        if (!(this.bridge.session && this.bridge.raceMode)) {
+          const winner = Object.entries(race.finishes).sort((a, b) => a[1] - b[1])[0];
+          const wp = winner && this.players.get(winner[0]);
+          this.toast(wp ? `Race over: ${wp.name} won in ${fmtTime(winner[1])}` : 'Race over: nobody finished');
+        }
         for (const p of this.players.values()) {
           if (race.finishes[p.id] != null) { p.status = 'finished'; p.finishMs = race.finishes[p.id]; }
           else if (race.participants.includes(p.id)) p.status = 'dnf';
         }
+        this.changed();
+        return;
+      }
+      case 'joinRace': {
+        if (!this.isHost || !race || m.race !== race.id || !player || race.finishes[from] != null) return;
+        if (!['loading', 'countdown', 'racing'].includes(this.phase)) return;
+        const late = !race.participants.includes(from);
+        if (late) {
+          if (race.participants.length >= MAX_RACERS) return;
+          race.participants = [...race.participants, from];
+        }
+        race.dnf.delete(from);
+        player.status = 'loading';
+        if (!self) this.toast(late ? `${player.name} joined the race` : `${player.name} is rejoining the race`);
+        this.broadcastLobby();
         this.changed();
         return;
       }
@@ -638,10 +728,13 @@ export class Multiplayer {
       }
       case 'backToLobby': {
         if (!fromHost && !self) return;
+        const inRaceLevel = this.bridge.raceMode && this.bridge.session;
         this.resetRace(true);
         this.phase = 'lobby';
         for (const p of this.players.values()) { p.status = 'lobby'; p.finishMs = null; }
+        if (inRaceLevel) this.bridge.returnToMenu();
         this.changed();
+        this.notify({ openPanel: true });
         return;
       }
       default:
@@ -676,9 +769,20 @@ export class Multiplayer {
       if (m.race.finishes && typeof m.race.finishes === 'object') {
         for (const [id, ms] of Object.entries(m.race.finishes)) if (V.id(id) && V.int(ms, 0, 36e5)) this.race.finishes[id] = ms;
       }
-      if (Array.isArray(m.race.dnf)) for (const id of m.race.dnf) if (V.id(id)) this.race.dnf.add(id);
+      if (Array.isArray(m.race.dnf)) this.race.dnf = new Set(m.race.dnf.filter(V.id).slice(0, 32));
+      if (Array.isArray(m.race.participants) && m.race.participants.every(V.id)) this.race.participants = m.race.participants.slice(0, MAX_RACERS);
+      if (this.bridge.raceMode) {
+        // We're racing: a snapshot sent before the host saw our join must not undo it.
+        if (!this.race.participants.includes(this.self.id)) this.race.participants = [...this.race.participants, this.self.id];
+        this.race.dnf.delete(this.self.id);
+      }
       if (V.num(m.race.deadline)) this.race.deadline = m.race.deadline;
       if (Array.isArray(m.race.skipVotes)) this.race.skipVotes = new Set(m.race.skipVotes.filter(V.id).slice(0, 32));
+    } else if (!this.race && m.race && ['loading', 'countdown', 'racing'].includes(m.phase) && this.raceFromSnapshot(m.race)) {
+      this.race = this.raceFromSnapshot(m.race);
+      this.phase = m.phase;
+      if (this.race.goAt != null) this.onStart({ race: this.race.id, goAt: this.race.goAt });
+      this.toast('A race is in progress. Press Join race to jump in.');
     } else if (!this.race && phases.includes(m.phase) && m.phase !== 'lobby') {
       this.phase = m.phase === 'results' ? 'lobby' : 'spectating';
     }

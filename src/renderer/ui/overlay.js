@@ -250,7 +250,7 @@ export function createOverlay(mp, bridge, tx) {
         list.append(h('div', { class: 'lobby-item' },
           h('div', null,
             h('div', { class: 'name' }, d.name || 'Race lobby'),
-            h('div', { class: 'small muted' }, `${d.level ? d.level : 'No level picked'} · ${d.phase === 'lobby' || !d.phase ? 'waiting' : 'racing'} · collisions ${d.collisions === '1' ? 'on' : 'off'}${d.game && d.game !== bridge.gameVersion() ? ` · game v${d.game}` : ''}`)),
+            h('div', { class: 'small muted' }, `${d.level ? d.level : 'No level picked'} · ${d.phase === 'lobby' || !d.phase ? 'waiting' : 'racing, join in anytime'} · collisions ${d.collisions === '1' ? 'on' : 'off'}${d.game && d.game !== bridge.gameVersion() ? ` · game v${d.game}` : ''}`)),
           h('div', { class: 'small muted' }, `${l.members.length}${l.limit ? `/${l.limit}` : ''} players`),
           l.compatible
             ? h('button', { class: 'btn', disabled: ui.busy, onClick: () => act(() => mp.join(l.id)) }, 'Join')
@@ -295,6 +295,7 @@ export function createOverlay(mp, bridge, tx) {
       return [
         h('button', { class: 'btn', onClick: () => act(async () => { const p = await mp.skipLevel(); if (p) { toast(`Next up: ${p.name}`); toggle(false); } }) }, 'Skip to a random level'),
         h('button', { class: 'btn ghost', onClick: () => { mp.endRaceNow(); toggle(false); } }, 'End race now'),
+        h('button', { class: 'btn ghost', title: 'Everyone leaves the level and goes back to the lobby', onClick: () => mp.backToLobby() }, 'Back to lobby'),
       ];
     }
     const voted = race.skipVotes.has(mp.self.id);
@@ -379,7 +380,11 @@ export function createOverlay(mp, bridge, tx) {
         h('span', { class: 'small muted' }, 'to finish.')));
 
     let action;
-    if (hostMode) {
+    const joinButton = () => h('button', { class: 'btn green big', onClick: () => { mp.joinRace(); toggle(false); } },
+      mp.race.participants.includes(mp.self.id) ? 'Rejoin race' : 'Join race in progress');
+    if (mp.canJoinRace()) {
+      action = joinButton();
+    } else if (hostMode) {
       if (inRace) action = h('button', { class: 'btn big', disabled: true }, 'Race in progress');
       else action = h('button', { class: 'btn green big', disabled: !lvl, onClick: () => { mp.startRace(); toggle(false); } }, mp.phase === 'results' ? 'Start next race' : 'Start race');
     } else if (inRace || mp.phase === 'spectating') {
@@ -414,7 +419,7 @@ export function createOverlay(mp, bridge, tx) {
             controls ? h('div', { class: 'card row' }, h('span', { class: 'small muted' }, 'Tired of this level?'), controls) : null,
             levelSummary(lvl, hostMode && !inRace),
             settings,
-            hostMode && mp.phase === 'results' ? h('button', { class: 'btn ghost', onClick: () => mp.backToLobby() }, 'End race for everyone') : null))),
+            hostMode && mp.phase === 'results' ? h('button', { class: 'btn ghost', title: 'Everyone leaves the level and goes back to the lobby', onClick: () => mp.backToLobby() }, 'Back to lobby (everyone)') : null))),
     ];
   }
 
@@ -527,7 +532,7 @@ export function createOverlay(mp, bridge, tx) {
     // results modal (interactive, so only rebuilt on state changes)
     if (mp.phase !== 'results') ui.resultsHidden = false;
     resultsLayer.replaceChildren();
-    if (mp.race && mp.phase === 'results' && !ui.resultsHidden && !ui.open) resultsLayer.append(results(mp.race));
+    if (mp.race && mp.phase === 'results' && !ui.resultsHidden && !ui.open && bridge.session && bridge.raceMode) resultsLayer.append(results(mp.race));
 
     renderTip();
 
@@ -584,7 +589,7 @@ export function createOverlay(mp, bridge, tx) {
     if (inSession !== lastInSession || paused !== lastPaused) { lastInSession = inSession; lastPaused = paused; render(); }
     const race = mp.race;
     hud.replaceChildren();
-    if (race && mp.lobby) {
+    if (race && mp.lobby && bridge.raceMode && (bridge.session || bridge.pendingLoad)) {
       const now = mp.clock.now();
       const participating = race.participants.includes(mp.self.id);
       if (mp.phase === 'loading' && participating) {
@@ -690,9 +695,17 @@ export function createOverlay(mp, bridge, tx) {
   tx.update?.onStatus?.(showUpdate);
   tx.update?.status?.().then(showUpdate).catch(() => {});
 
+  let lastRaceId = null;
   mp.subscribe((_m, evt) => {
+    // A new race is loading for us: get the panel out of the way.
+    const rid = mp.race && mp.race.id;
+    if (rid !== lastRaceId) {
+      lastRaceId = rid;
+      if (rid && ui.open && mp.race.participants.includes(mp.self?.id)) toggle(false);
+    }
     if (evt && evt.toast) toast(evt.toast, evt.kind);
     else if (evt && evt.chat) { if (!ui.open) toast(`${evt.chat.name}: ${evt.chat.text}`); }
+    else if (evt && evt.openPanel) { ui.view = 'main'; toggle(true); }
     else render();
   });
 
