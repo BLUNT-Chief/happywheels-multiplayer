@@ -85,7 +85,7 @@ class SteamNet {
   pushLobby() { if (this.lobby) this.emit('hwmp:lobby:update', this.lobbyInfo()); }
 
   async create({ type = 'friends', maxMembers = 8, data = {} }) {
-    this.leave();
+    this.leave(true);
     const lobby = await this.client.matchmaking.createLobby(LobbyType[type] ?? LobbyType.friends, Math.max(2, Math.min(16, maxMembers | 0)));
     this.lobby = lobby;
     lobby.mergeFullData({
@@ -100,7 +100,7 @@ class SteamNet {
 
   async join(lobbyId) {
     if (this.lobby && String(this.lobby.id) === String(lobbyId)) return this.lobbyInfo();
-    this.leave();
+    this.leave(true);
     const lobby = await this.client.matchmaking.joinLobby(BigInt(lobbyId));
     const data = lobby.getFullData() || {};
     if (data[LOBBY_MARKER] !== '1') { lobby.leave(); throw new Error('Not a Happy Wheels Multiplayer lobby'); }
@@ -113,12 +113,13 @@ class SteamNet {
     return this.lobbyInfo();
   }
 
-  leave() {
+  /** silent: switching lobbies; the renderer resets its own state when it enters the new one. */
+  leave(silent = false) {
     if (!this.lobby) return;
     try { this.lobby.leave(); } catch {}
     this.lobby = null;
     this.members = new Set();
-    this.emit('hwmp:lobby:update', null);
+    if (!silent) this.emit('hwmp:lobby:update', null);
   }
 
   async list() {

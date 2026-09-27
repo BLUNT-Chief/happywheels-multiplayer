@@ -1,7 +1,7 @@
 // Lobby + race state machine. The Steam lobby owner is the host and is authoritative for race
 // control (load, start, results). Body state is streamed peer-to-peer by every player.
-import { log } from '../log.js';
 
+import { log } from '../log.js';
 import { T, encodeState, decodeState, encodeCtrl, decodeCtrl, encodePing, decodePing, V, cleanText } from './protocol.js';
 import { Clock } from './clock.js';
 import { sampleBodies, MAX_BODIES } from '../game/character.js';
@@ -74,6 +74,8 @@ export class Multiplayer {
     b.on('levelComplete', () => this.onLocalFinish());
     b.on('exitedToMenu', () => this.onLocalExit());
     setInterval(() => this.pingHost(), 500);
+    // Host safety net: re-check race completion (covers finish windows inherited from a previous host).
+    setInterval(() => { if (this.isHost && this.race && (this.phase === 'racing' || this.phase === 'countdown')) this.checkRaceProgress(); }, 1000);
     this.changed();
   }
 
@@ -104,10 +106,14 @@ export class Multiplayer {
   invite() { return this.tx.lobby.invite(); }
 
   enterLobby(info) {
+    this.resetRace(true);
     this.lobby = info;
     this.phase = 'lobby';
+    this.chat = [];
     this.players.clear();
-    this.players.set(this.self.id, this.newPlayer(this.self.id, this.self.name));
+    const me = this.newPlayer(this.self.id, this.self.name);
+    me.character = this.prefs.character;
+    this.players.set(this.self.id, me);
     this.clock.reset(this.isHost);
     for (const m of info.members) if (m !== this.self.id) this.sendTo(m, this.helloMsg());
     this.changed();
@@ -306,7 +312,7 @@ export class Multiplayer {
       finishes: {}, dnf: new Set(), deadline: null, collisions: !!msg.collisions, forceCharacter: msg.forceCharacter | 0,
     };
     this.phase = 'loading';
-    for (const p of this.players.values()) { p.status = msg.participants.includes(p.id) ? 'loading' : 'spectating'; p.finishMs = null; }
+    for (const p of this.players.values()) { p.status = msg.participants.includes(p.id) ? 'loading' : 'spectating'; p.finishMs = null; p.ready = false; }
     const me = this.players.get(this.self.id);
     this.changed();
     if (!msg.participants.includes(this.self.id)) return;

@@ -60,6 +60,13 @@ export function createOverlay(mp, bridge, tx) {
   const charName = (i) => (i ? (charNames()[i - 1] || `Character ${i}`) : 'Players choose');
   const isTyping = () => { const a = shadow.activeElement; return !!a && (a.tagName === 'INPUT' || a.tagName === 'SELECT' || a.tagName === 'TEXTAREA'); };
 
+  // Clicking our buttons must not take keyboard focus from the game: a focused button would be
+  // 'clicked' again by Space/Enter, which are Happy Wheels controls.
+  shadow.addEventListener('mousedown', (e) => {
+    const t = e.target;
+    if (t instanceof Element && t.closest('button, .level')) e.preventDefault();
+  }, true);
+
   // Keep game hotkeys away from our text fields, and add ours (F2 panel, R restart).
   window.addEventListener('keydown', (e) => {
     if (isTyping()) { e.stopImmediatePropagation(); if (e.key === 'Escape') shadow.activeElement.blur(); return; }
@@ -74,6 +81,7 @@ export function createOverlay(mp, bridge, tx) {
 
   function toggle(v = !ui.open) {
     ui.open = v;
+    if (!v && shadow.activeElement) shadow.activeElement.blur();
     if (ui.open && !mp.lobby) refreshLobbies();
     render();
   }
