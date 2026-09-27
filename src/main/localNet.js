@@ -129,7 +129,7 @@ class LocalNet {
 
   get available() { return true; }
   self() { return { steamId: this.id, name: this.name }; }
-  async create({ data = {} } = {}) { const i = await this.req('create', { data: { hwmp: '1', proto: '2', ...data } }); this.lobby = i; return i; }
+  async create({ data = {} } = {}) { const i = await this.req('create', { data: { hwmp: '1', proto: '3', ...data } }); this.lobby = i; return i; }
   async join(id) { const i = await this.req('join', { lobby: id }); this.lobby = i; return i; }
   leave() { if (this.lobby) this.req('leave').catch(() => {}); this.lobby = null; this.members = new Set(); }
   async list() { return (await this.req('list')).map((l) => ({ ...l, compatible: true })); }

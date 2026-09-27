@@ -5,7 +5,7 @@
 const { BrowserWindow } = require('electron');
 const { log } = require('./log');
 
-const PROTOCOL_VERSION = 2; // 2: AI racers (host-sent bot messages)
+const PROTOCOL_VERSION = 3; // 2: AI racers; 3: map rules, cups, votes, survival, host tools
 const LOBBY_MARKER = 'hwmp';
 const MAX_PACKET = 1200; // Steam unreliable limit; larger messages go reliable
 const LobbyType = { private: 0, friends: 1, public: 2, invisible: 3 };

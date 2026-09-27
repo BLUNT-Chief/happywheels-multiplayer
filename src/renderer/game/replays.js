@@ -5,6 +5,7 @@
 
 import { Game } from './locate.js';
 import { computeLayout, sampleBodies, hookCharacterEvents, MAX_BODIES } from './character.js';
+import { readMapTags, summarizeTags } from './mapTags.js';
 import { log } from '../log.js';
 
 export const STEP_MS = 1000 / 30;     // the game steps its physics 30 times a second
@@ -32,8 +33,9 @@ const REQUEST_GAP_MS = 500;
 const LIMITS = [[60 * 1000, 15], [10 * 60 * 1000, 40]]; // [window, max requests]
 const BUSY_COOLDOWN_MS = 10 * 60 * 1000;
 
-export const DIFFICULTIES = ['easy', 'medium', 'hard', 'expert'];
-export const DIFFICULTY_NAMES = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert' };
+// 'mine' drives the host's own best run on the level (see runs.js).
+export const DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'mine'];
+export const DIFFICULTY_NAMES = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', mine: 'Your best' };
 
 const siteURL = () => (Game.Settings && Game.Settings.siteURL) || 'https://totaljerkface.com/';
 
@@ -142,6 +144,32 @@ function rebuildLevel(loader) {
     loader.addEventListener('complete', done);
     try { loader.dataLoaded(); } catch (e) { loader.removeEventListener('complete', done); reject(e); }
   }).finally(() => { S.hideVehicle = hide; });
+}
+
+/** Level record + loader, cached per level. The level's #mp tags are read as soon as it loads. */
+const loaders = new Map(); // levelId -> Promise<loader>
+export function levelLoader(levelId) {
+  let p = loaders.get(levelId);
+  if (!p) {
+    p = levelRecord(levelId).then(loadLevel).then((loader) => {
+      try { loader.__hwmpMap = summarizeTags(readMapTags(loader.levelData, levelId)); } catch { loader.__hwmpMap = null; }
+      return loader;
+    });
+    loaders.set(levelId, p);
+    p.catch(() => loaders.delete(levelId));
+    while (loaders.size > 6) loaders.delete(loaders.keys().next().value);
+  }
+  return p;
+}
+
+/**
+ * A level's multiplayer map rules (see mapTags.js), or null if it has none. Level 1 is built into
+ * the game and has none.
+ */
+export async function mapInfo(levelId) {
+  if (!levelId || levelId === 1) return null;
+  const loader = await levelLoader(levelId);
+  return loader.__hwmpMap || null;
 }
 
 // ---- off-screen simulation ------------------------------------------------------------------------
@@ -352,7 +380,7 @@ function levelEntry(levelId) {
         cachePut(`lists2:${levelId}`, lists);
       }
       const entry = { loader: null, newest: lists.newest, fastest: lists.fastest, runs: new Map(), errors: new Set(), fallbackFails: 0 };
-      entry.getLoader = () => (entry.loader ||= levelRecord(levelId).then(loadLevel).catch((e) => { entry.loader = null; throw e; }));
+      entry.getLoader = () => levelLoader(levelId);
       return entry;
     })();
     levels.set(levelId, p);

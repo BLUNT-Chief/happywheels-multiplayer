@@ -27,7 +27,12 @@ export const bridge = {
   now: () => performance.now(),
   pendingLoad: null,
   spawnSlot: null,       // our index among the racers, for maps with several #mp spawn points
-  checkpoint: null,      // last #mp checkpoint we touched this race (level pixels)
+  checkpoint: null,      // where R respawns us this race (a #mp checkpoint, level pixels)
+  restartMode: 'checkpoint', // what R does in races: 'checkpoint' | 'start' | 'off'
+  course: { lap: 1, nextCp: 0, reached: new Set(), done: false },
+  runSessions: 0,        // sessions started this race (the first is the start, the rest restarts)
+  deadReported: false,
+  spectating: null,      // racer id the camera follows instead of us
 
   on(evt, fn) { (listeners[evt] ||= []).push(fn); return () => { listeners[evt] = listeners[evt].filter((f) => f !== fn); }; },
 
@@ -46,10 +51,48 @@ export const bridge = {
     return (L && L.__hwmpTags) || null;
   },
 
-  /** New race: spawn slot for maps with start positions, no checkpoint yet. */
-  resetMapProgress(slot) {
+  /** New race (or solo run): spawn slot for maps with start positions, a fresh course. */
+  resetMapProgress(slot, { restart = 'checkpoint' } = {}) {
     this.spawnSlot = slot == null || slot < 0 ? null : slot;
     this.checkpoint = null;
+    this.restartMode = ['checkpoint', 'start', 'off'].includes(restart) ? restart : 'checkpoint';
+    this.course = newCourse();
+    this.runSessions = 0;
+    this.deadReported = false;
+    this.spectating = null;
+  },
+
+  /** Where we are on this map's course: { lap, laps, cp, total, ordered, done, progress }. */
+  courseInfo() { return courseInfo(this.mapTags()); },
+
+  /** Follow another racer with the camera (null: back to our own character). */
+  spectate(id) {
+    const s = this.session;
+    const cam = s && s.camera;
+    if (!cam || !s.character) return false;
+    if (id == null) {
+      cam.focus = s.character.cameraFocus;
+      if (this.__secondFocus !== undefined) { cam.secondFocus = this.__secondFocus; this.__secondFocus = undefined; }
+      this.spectating = null;
+      return true;
+    }
+    const p = this.puppets.get(id);
+    const body = p && p.character && p.character.cameraFocus;
+    if (!body) return false;
+    if (this.__secondFocus === undefined) this.__secondFocus = cam.secondFocus;
+    cam.secondFocus = null;
+    cam.focus = body;
+    this.spectating = id;
+    return true;
+  },
+
+  /** Name of the level being played (from the game's level record), or ''. */
+  levelName() {
+    try {
+      const ctl = Game.app && Game.app.sessionController;
+      const o = ctl && ctl.levelDataObject;
+      return o && o.name ? String(o.name) : '';
+    } catch { return ''; }
   },
 
   characterNames() { return (Game.Settings?.characterNames || []).slice(); },
@@ -298,24 +341,48 @@ function installContactFilter(session) {
   world.__hwmpFilter = true;
 }
 
-// ---- multiplayer map tags --------------------------------------------------------------------
+// ---- multiplayer map tags: spawns, checkpoints, laps -----------------------------------------
 const CHECKPOINT_RADIUS = 3; // meters
 
-/** In races: start at our #mp spawn point, or at the last #mp checkpoint after pressing R. */
+function newCourse() { return { lap: 1, nextCp: 0, reached: new Set(), done: false }; }
+
+/**
+ * How a map's course works. Maps with a custom finish (#mp finish) or laps take their checkpoints
+ * in order, and so do maps whose checkpoints are all numbered; on other maps checkpoints are just
+ * respawn points, touched in any order. laps: 0 means the level's own finish counts.
+ */
+export function courseOf(tags) {
+  if (!tags) return { laps: 0, ordered: false };
+  const laps = tags.rules.laps || (tags.finishes.length ? 1 : 0);
+  const ordered = laps > 0 || (tags.checkpoints.length > 0 && tags.checkpoints.every((c) => c.order != null));
+  return { laps, ordered };
+}
+
+function courseInfo(tags) {
+  const c = bridge.course;
+  const { laps, ordered } = courseOf(tags);
+  const total = tags ? tags.checkpoints.length : 0;
+  const cp = ordered ? c.nextCp : c.reached.size;
+  // One number that grows as a racer gets further (for rankings when a race ends early).
+  const progress = c.done ? 1e6 : ordered ? (c.lap - 1) * (total + 1) + c.nextCp : c.reached.size;
+  return { lap: c.lap, laps, cp, total, ordered, done: c.done, progress };
+}
+
+/** In races: start at our #mp spawn point, or at the last checkpoint after pressing R. */
 function startPointFor(session) {
   const L = session._level;
   if (!L) return null;
   // Read the tags the first time this level asks for its start point, before it's built.
-  if (L.__hwmpTags === undefined) L.__hwmpTags = takeMapTags(L);
+  if (L.__hwmpTags === undefined) L.__hwmpTags = takeMapTags(L, Game.Settings && Game.Settings.levelIndex);
   const tags = L.__hwmpTags;
-  if (bridge.checkpoint) return bridge.checkpoint;
+  if (bridge.checkpoint && bridge.restartMode === 'checkpoint') return bridge.checkpoint;
   if (tags && tags.spawns.length && bridge.spawnSlot != null) return tags.spawns[bridge.spawnSlot % tags.spawns.length];
   return null;
 }
 
 /**
- * A restart puts the character back where it was first created; after touching a checkpoint,
- * move it (vehicle and all) to the checkpoint instead.
+ * A restart puts the character back where it was first created; to respawn at a checkpoint,
+ * move it (vehicle and all) from there to the checkpoint.
  */
 function moveToCheckpoint(session) {
   const L = session.level;
@@ -337,26 +404,60 @@ function moveToCheckpoint(session) {
   }
 }
 
-function trackCheckpoints(session) {
+/** Every physics step in a race or solo run: checkpoints, laps and the custom finish. */
+function trackCourse(session) {
   const L = session.level;
   const tags = L && L.__hwmpTags;
-  if (!tags || !tags.checkpoints.length || !bridge.raceMode) return;
+  const course = bridge.course;
+  if (!tags || !bridge.raceMode || course.done || bridge.frozen) return;
+  if (!tags.checkpoints.length && !tags.finishes.length) return;
   const ch = session.character;
   if (!ch || ch.dead || !ch.cameraFocus) return;
   const c = ch.cameraFocus.GetWorldCenter();
   const scale = L.m_physScale || session.m_physScale || 30;
-  const cur = bridge.checkpoint;
-  for (const cp of tags.checkpoints) {
-    if (cp === cur) continue;
-    if (cur && cp.order != null && cur.order != null && cp.order < cur.order) continue; // no going back
-    const dx = c.x - cp.x / scale;
-    const dy = c.y - cp.y / scale;
-    if (dx * dx + dy * dy < CHECKPOINT_RADIUS * CHECKPOINT_RADIUS) {
+  const near = (p) => { const dx = c.x - p.x / scale; const dy = c.y - p.y / scale; return dx * dx + dy * dy < CHECKPOINT_RADIUS * CHECKPOINT_RADIUS; };
+  const { laps, ordered } = courseOf(tags);
+  const cps = tags.checkpoints;
+  if (ordered) {
+    if (course.nextCp < cps.length) {
+      const cp = cps[course.nextCp];
+      if (!near(cp)) return;
+      course.nextCp++;
       bridge.checkpoint = cp;
-      emit('checkpoint', cp);
+      emit('checkpoint', courseInfo(tags));
+      emit('progress', courseInfo(tags));
       return;
     }
+    const line = laps ? tags.finishes.find(near) : null;
+    if (!line) return;
+    if (course.lap < laps) {
+      course.lap++;
+      course.nextCp = 0;
+      bridge.checkpoint = line;
+      emit('lap', courseInfo(tags));
+    } else {
+      course.done = true;
+      emit('courseFinish', courseInfo(tags));
+    }
+    emit('progress', courseInfo(tags));
+    return;
   }
+  for (const cp of cps) {
+    if (cp === bridge.checkpoint || !near(cp)) continue;
+    const first = !course.reached.has(cp);
+    course.reached.add(cp);
+    bridge.checkpoint = cp;
+    if (first) { emit('checkpoint', courseInfo(tags)); emit('progress', courseInfo(tags)); }
+    return;
+  }
+}
+
+/** Survival: tell the race once when our character dies. */
+function trackDeath(session) {
+  const ch = session.character;
+  if (bridge.deadReported || !bridge.raceMode || !ch || !ch.dead) return;
+  bridge.deadReported = true;
+  emit('died', session);
 }
 
 // ---- hits on racers ----------------------------------------------------------------------------
@@ -475,6 +576,7 @@ function installGameHooks() {
   wrap(SessionP, 'levelComplete', (orig) => function (...a) {
     const r = orig.apply(this, a);
     if (this === bridge.session) {
+      if (bridge.raceMode && courseOf(bridge.mapTags()).laps) { this.inputAllowed = true; return r; }
       emit('levelComplete', this);
       // The game locks the controls at the finish (its victory menu takes over). In a race that
       // menu is suppressed, so give the controls back: players keep driving while others finish.
@@ -511,6 +613,10 @@ function installGameHooks() {
     if (this.__hwmpAbandoned) return undefined;
     return orig.apply(this, a);
   });
+  wrap(CtlP, 'restartLevel', (orig) => function (...a) {
+    if (bridge.raceMode && bridge.restartMode === 'off' && this.session) { emit('restartBlocked'); return undefined; }
+    return orig.apply(this, a);
+  });
   wrap(CtlP, 'returnToMainMenu', (orig) => function (...a) {
     const r = orig.apply(this, a);
     emit('exitedToMenu');
@@ -528,7 +634,8 @@ function installGameHooks() {
     const s = bridge.session;
     if (!s || world !== s.m_world) return;
     reportHits();
-    trackCheckpoints(s);
+    trackCourse(s);
+    trackDeath(s);
     emit('step', s);
   });
   onHook('render', () => {
@@ -571,8 +678,19 @@ function onSessionStart(session) {
   markLocalShapes(session);
   installContactFilter(session);
   installHitDetector(session);
-  if (bridge.raceMode && bridge.checkpoint) {
-    try { moveToCheckpoint(session); } catch (e) { log.warn('checkpoint respawn', e); }
+  bridge.deadReported = false;
+  bridge.spectating = null;
+  bridge.__secondFocus = undefined;
+  if (bridge.raceMode) {
+    const restart = bridge.runSessions++ > 0;
+    if (bridge.checkpoint && bridge.restartMode === 'checkpoint') {
+      try { moveToCheckpoint(session); } catch (e) { log.warn('checkpoint respawn', e); }
+    } else if (restart) {
+      // Back to the start line: the course starts over too.
+      bridge.course = newCourse();
+      bridge.checkpoint = null;
+      emit('progress', courseInfo(bridge.mapTags()));
+    }
   }
   if (!ch.__hwmpHooked) {
     ch.__hwmpHooked = true;

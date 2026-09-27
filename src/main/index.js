@@ -160,6 +160,11 @@ function main() {
     if (!isTrustedSender(e)) return;
     try { if (new URL(url).protocol === 'https:') shell.openExternal(url); } catch {}
   });
+  // Report a bug: show the log file so it can be attached.
+  ipcMain.on('hwmp:openLogs', (e) => {
+    if (!isTrustedSender(e)) return;
+    shell.showItemInFolder(path.join(userDataDir, 'logs', 'hwmp.log'));
+  });
 
   // Several local test instances: bypass the game's single-instance lock, keep background windows
   // simulating, and tile the game windows.

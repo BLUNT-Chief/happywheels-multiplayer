@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 280" width="960" height="280" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="960" height="280" rx="18" fill="#1b2029"/>
+  <!-- editor grid -->
+  <g stroke="#262d39" stroke-width="1">
+    <path d="M0,40 H960 M0,80 H960 M0,120 H960 M0,160 H960 M0,200 H960 M0,240 H960"/>
+    <path d="M60,0 V280 M120,0 V280 M180,0 V280 M240,0 V280 M300,0 V280 M360,0 V280 M420,0 V280 M480,0 V280 M540,0 V280 M600,0 V280 M660,0 V280 M720,0 V280 M780,0 V280 M840,0 V280 M900,0 V280"/>
+  </g>
+
+  <!-- the text box -->
+  <rect x="330" y="92" width="300" height="84" rx="4" fill="#fff" fill-opacity=".04" stroke="#8fb8e8" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="346" y="126" font-size="24" font-weight="700" fill="#fff">#mp checkpoint 2</text>
+  <text x="346" y="158" font-size="18" fill="#9aa4b3">after the big jump</text>
+
+  <!-- callouts -->
+  <g font-size="14" fill="#e8edf5">
+    <path d="M326,118 H250 V70 H90" fill="none" stroke="#f2708a" stroke-width="2"/>
+    <circle cx="326" cy="118" r="4" fill="#f2708a"/>
+    <text x="90" y="46" font-weight="700" fill="#f2708a">First line: the tag</text>
+    <text x="90" y="64">starts with #mp, any upper/lower case</text>
+
+    <path d="M326,152 H250 V210 H90" fill="none" stroke="#9aa4b3" stroke-width="2"/>
+    <circle cx="326" cy="152" r="4" fill="#9aa4b3"/>
+    <text x="90" y="232" font-weight="700" fill="#c9d1dc">More lines: your own notes</text>
+    <text x="90" y="250">ignored by the mod</text>
+
+    <path d="M634,110 H700 V70 H720" fill="none" stroke="#5cc26d" stroke-width="2"/>
+    <text x="726" y="66" font-weight="700" fill="#5cc26d">Where the box is, the tag counts</text>
+    <text x="726" y="84">Test map shows the exact spot</text>
+
+    <path d="M634,160 H700 V210 H720" fill="none" stroke="#3f8fd6" stroke-width="2"/>
+    <text x="726" y="206" font-weight="700" fill="#7db6ea">Opacity 0%</text>
+    <text x="726" y="224">hides it in single-player too</text>
+    <text x="726" y="242">(races always hide the text)</text>
+  </g>
+</svg>

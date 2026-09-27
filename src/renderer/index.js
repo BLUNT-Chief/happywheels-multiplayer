@@ -6,6 +6,8 @@ import { Game } from './game/locate.js';
 import { Multiplayer } from './net/race.js';
 import { createOverlay } from './ui/overlay.js';
 import * as replays from './game/replays.js';
+import { PersonalRecords } from './game/runs.js';
+import { Solo } from './net/solo.js';
 
 const tx = window.hwmp;
 
@@ -32,11 +34,14 @@ async function boot() {
     showIncompatible();
     return;
   }
+  const personal = new PersonalRecords(bridge);
   const mp = new Multiplayer(tx, bridge);
-  const overlay = createOverlay(mp, bridge, tx);
+  const solo = new Solo(mp, bridge, personal);
+  mp.solo = solo;
+  const overlay = createOverlay(mp, bridge, tx, { solo, personal });
   overlay.setRendererGetter(() => state.renderer);
   await mp.start();
-  if (__DEV__ && tx?.dev) window.__hwmp = { libs, state, on, bridge, mp, Game, overlay, replays };
+  if (__DEV__ && tx?.dev) window.__hwmp = { libs, state, on, bridge, mp, Game, overlay, replays, solo, personal };
   log.info('ready');
 }
 

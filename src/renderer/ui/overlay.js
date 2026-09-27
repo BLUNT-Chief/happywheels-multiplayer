@@ -2,97 +2,19 @@
 // All player-supplied text is inserted as text nodes, never as HTML.
 
 import css from './styles.css';
-import { fmtTime } from '../net/race.js';
+import { fmtTime, EMOTES } from '../net/race.js';
 import { DIFFICULTIES, DIFFICULTY_NAMES } from '../game/replays.js';
 import { MAX_BOTS } from '../net/protocol.js';
 import { log } from '../log.js';
+import { h, patch, lobbyCode, parseCode, stars, fmtNum } from './dom.js';
+import { rankRace } from '../net/scoring.js';
+import { GHOST_ID } from '../net/solo.js';
+import { cupWinnerText } from '../net/cup.js';
+import { notesSince, CHANGELOG } from './changelog.js';
+import { soloCard, rulesCard, mapCard, cupCard, voteCard, boardCard, hostActions, lockToggle, detailsExtras, settingsView, statsView, mapHelpView, whatsNewModal, GUIDE_URL } from './extras.js';
+import { raceExtras, deadlineHint, soloHud, testPanel, drawMarkers } from './hud.js';
 
-// Tiny element builder. Extra props: key (stable id used to keep focus/scroll across redraws) and
-// onEnter (run when Enter is pressed in a text box). Event handlers are stored on the element and
-// called through one listener per event type, so updating the page in place (see morph) can swap
-// them without replacing the element.
-function dispatch(e) {
-  const fn = e.currentTarget.__handlers && e.currentTarget.__handlers[e.type];
-  if (fn) fn(e);
-}
-function listen(el, type) {
-  el.__types ||= new Set();
-  if (el.__types.has(type)) return;
-  el.__types.add(type);
-  el.addEventListener(type, dispatch);
-}
-function h(tag, props, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props || {})) {
-    if (v == null || v === false) continue;
-    if (k === 'class') el.className = v;
-    else if (k === 'key') el.dataset.key = v;
-    else if (k === 'onEnter') el.__onEnter = v;
-    else if (k.startsWith('on') && typeof v === 'function') {
-      const type = k.slice(2).toLowerCase();
-      (el.__handlers ||= {})[type] = v;
-      listen(el, type);
-    }
-    else if (k === 'style') el.setAttribute('style', v);
-    else if (k === 'value' || k === 'checked' || k === 'disabled' || k === 'selected') {
-      el[k] = v;
-      el.setAttribute(k, v === true ? '' : String(v)); // mirrored so redraws can be compared as HTML
-    } else el.setAttribute(k, v === true ? '' : String(v));
-  }
-  for (const c of kids.flat(Infinity)) if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
-  return el;
-}
-
-/**
- * Updates a live element to match a freshly built one, keeping the live nodes wherever the
- * structure matches. A button under the mouse survives any redraw, so a click that straddles one
- * still lands; focus, text selection, scroll and hover are kept as well.
- */
-function morph(from, to) {
-  for (const a of [...from.attributes]) if (!to.hasAttribute(a.name)) from.removeAttribute(a.name);
-  for (const a of [...to.attributes]) if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
-  for (const k of ['checked', 'disabled', 'selected']) if (from[k] !== undefined && from[k] !== to[k]) from[k] = to[k];
-  if ('value' in to && from.value !== to.value && from !== from.getRootNode().activeElement) from.value = to.value;
-  from.__handlers = to.__handlers;
-  from.__onEnter = to.__onEnter;
-  if (to.__types) for (const t of to.__types) listen(from, t);
-  morphChildren(from, to);
-}
-
-function morphChildren(from, to) {
-  const olds = [...from.childNodes];
-  const news = [...to.childNodes];
-  news.forEach((n, i) => {
-    const o = olds[i];
-    if (!o) { from.appendChild(n); return; }
-    const same = o.nodeType === n.nodeType && o.nodeName === n.nodeName && (o.nodeType !== 1 || o.dataset.key === n.dataset.key);
-    if (!same) { from.replaceChild(n, o); return; }
-    if (o.nodeType === 1) morph(o, n);
-    else if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue;
-  });
-  for (let i = news.length; i < olds.length; i++) olds[i].remove();
-}
-
-/** Shows `nodes` in `layer`, updating what's already there in place. */
-function patch(layer, ...nodes) {
-  const next = document.createElement('div');
-  for (const n of nodes.flat()) if (n) next.append(n);
-  morphChildren(layer, next);
-}
-
-const lobbyCode = (id) => { try { return BigInt(id).toString(36).toUpperCase(); } catch { return String(id); } };
-const parseCode = (code) => {
-  const c = String(code).trim();
-  if (/^\d{15,20}$/.test(c)) return c;
-  if (!/^[0-9a-z]{6,14}$/i.test(c)) return null;
-  let n = 0n;
-  for (const ch of c.toLowerCase()) n = n * 36n + BigInt(parseInt(ch, 36));
-  return n.toString();
-};
-const stars = (r) => (r > 0 ? `★ ${r.toFixed(1)}` : '');
-const fmtNum = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n || 0));
-
-export function createOverlay(mp, bridge, tx) {
+export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
   const host = h('div', { id: 'hwmp-overlay' });
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.append(h('style', null, css));
@@ -107,8 +29,10 @@ export function createOverlay(mp, bridge, tx) {
   };
   addEventListener('resize', applyScale);
   applyScale();
-  const hud = h('div');
+  const hud = h('div', { class: 'hudroot' });
   const tags = h('div');
+  const markers = h('div');
+  const modalLayer = h('div');
   const panelLayer = h('div');
   const resultsLayer = h('div');
   const raceMenuLayer = h('div');
@@ -116,13 +40,13 @@ export function createOverlay(mp, bridge, tx) {
   const updateBox = h('div');
   const tipLayer = h('div');
   const pill = h('button', { class: 'pill', title: 'Multiplayer (F2)', onClick: () => toggle() });
-  scaled.append(hud, resultsLayer, raceMenuLayer, panelLayer, toasts, updateBox, tipLayer, pill);
-  root.append(tags, scaled);
+  scaled.append(hud, resultsLayer, raceMenuLayer, panelLayer, toasts, updateBox, tipLayer, pill, modalLayer);
+  root.append(markers, tags, scaled);
   (document.body || document.documentElement).append(host);
 
   const ui = {
     open: false,
-    view: 'main', // main | levels
+    view: 'main', // main | levels | settings | stats | maphelp
     inputs: {},   // text typed into boxes, by key (survives redraws)
     busy: false,
     lobbies: null, lobbiesErr: null, loadingLobbies: false,
@@ -134,6 +58,9 @@ export function createOverlay(mp, bridge, tx) {
     selected: null,
     resultsHidden: false,
     shortcut: null,
+    menuFor: null,      // host options open for this player
+    whatsNew: false,    // show the What's new dialog
+    bubbles: new Map(), // racer id -> { text, until } (quick chat)
   };
   const avatars = new Map();
   const charNames = () => { const n = bridge.characterNames(); return n.length ? n : Array.from({ length: 11 }, (_, i) => `Character ${i + 1}`); };
@@ -152,10 +79,26 @@ export function createOverlay(mp, bridge, tx) {
       return;
     }
     if (e.key === 'F2') { e.preventDefault(); e.stopImmediatePropagation(); toggle(); return; }
+    if (ui.whatsNew && e.key === 'Escape') { e.stopImmediatePropagation(); closeWhatsNew(); return; }
     if (ui.open && e.key === 'Escape') { e.stopImmediatePropagation(); if (ui.view !== 'main') { ui.view = 'main'; render(); } else toggle(false); return; }
-    if ((e.key === 'r' || e.key === 'R') && !e.repeat && mp.race && bridge.session && (mp.phase === 'racing' || mp.phase === 'results') && !bridge.frozen) {
+    const inRaceLevel = bridge.session && bridge.raceMode && !bridge.frozen;
+    const racingNow = mp.race && (mp.phase === 'racing' || mp.phase === 'results');
+    if ((e.key === 'r' || e.key === 'R') && !e.repeat && inRaceLevel && (racingNow || (solo && solo.active))) {
       e.stopImmediatePropagation();
       bridge.restart();
+      return;
+    }
+    // Spectate: Tab cycles through the other racers once you're done (finished, out, or results).
+    if (e.key === 'Tab' && inRaceLevel && mp.race && canSpectate()) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      cycleSpectate(e.shiftKey ? -1 : 1);
+      return;
+    }
+    if (e.key === 'Backspace' && bridge.spectating) { e.preventDefault(); e.stopImmediatePropagation(); bridge.spectate(null); return; }
+    // Quick chat: keys 1-6 during races.
+    if (mp.prefs.emoteKeys && inRaceLevel && mp.race && !e.repeat && e.key >= '1' && e.key <= String(EMOTES.length)) {
+      e.stopImmediatePropagation();
+      mp.emote(Number(e.key) - 1);
     }
   }, true);
   for (const type of ['keyup', 'keypress']) window.addEventListener(type, (e) => { if (activeInput()) e.stopImmediatePropagation(); }, true);
@@ -237,7 +180,7 @@ export function createOverlay(mp, bridge, tx) {
   }
 
   // Maps made for multiplayer: their makers put HWMP in the level name (see the README).
-  const MAP_GUIDE_URL = 'https://github.com/BLUNT-Chief/happywheels-multiplayer#making-multiplayer-maps';
+  const MAP_GUIDE_URL = GUIDE_URL;
   async function loadMpMaps(page = 1) {
     const m = ui.mpmaps;
     m.loading = true; m.error = null; m.page = page; render();
@@ -289,12 +232,38 @@ export function createOverlay(mp, bridge, tx) {
     });
   }
 
+  // Context for the views in extras.js / hud.js.
+  const c = { mp, bridge, tx, ui, solo, h, render, toast, toggle, act, charName, charNames, textBox, header, fmtTime };
+
+  function canSpectate() {
+    const r = mp.race;
+    if (!r) return false;
+    return mp.phase === 'results' || r.finishes[mp.self.id] != null || r.deaths[mp.self.id] != null || !!bridge.spectating;
+  }
+
+  function cycleSpectate(dir) {
+    const ids = [...bridge.puppets.keys()].filter((id) => id !== GHOST_ID);
+    if (!ids.length) { toast('Nobody else to watch'); return; }
+    const order = [null, ...ids];
+    const i = order.indexOf(bridge.spectating);
+    const next = order[(i + dir + order.length) % order.length];
+    bridge.spectate(next);
+  }
+
+  function closeWhatsNew() {
+    ui.whatsNew = false;
+    mp.setPref('lastSeenVersion', tx.modVersion || '');
+    render();
+  }
+
   // ---- views ------------------------------------------------------------------------------------
   function header(title, back) {
     return h('header', null,
       back ? h('button', { class: 'btn ghost', onClick: back }, '← Back') : null,
       h('h1', null, title),
       h('div', { class: 'grow' }),
+      back ? null : h('button', { class: 'icon', title: 'Your stats and personal bests', onClick: () => { ui.view = 'stats'; render(); } }, '📊'),
+      back ? null : h('button', { class: 'icon', title: 'Settings and help', onClick: () => { ui.view = 'settings'; render(); } }, '⚙'),
       h('span', { class: 'ver' }, `v${tx.modVersion || '?'}`),
       h('button', { class: 'close', title: 'Close (Esc)', onClick: () => toggle(false) }, '×'));
   }
@@ -329,6 +298,7 @@ export function createOverlay(mp, bridge, tx) {
     return [
       header('Multiplayer'),
       h('div', { class: 'body stack' },
+        soloCard(c),
         mp.self ? h('div', { class: 'muted' }, 'Signed in to Steam as ', h('b', null, mp.self.name)) : h('div', { class: 'error' }, 'Steam is not running. Start Steam, then restart Happy Wheels Multiplayer.'),
         h('div', { class: 'card stack' },
           h('h2', null, 'Host a race'),
@@ -341,6 +311,12 @@ export function createOverlay(mp, bridge, tx) {
           h('div', { class: 'row' }, textBox('code', { placeholder: 'Lobby code', maxlength: 24, onEnter: joinByCode }),
             h('button', { class: 'btn', disabled: ui.busy, onClick: joinByCode }, 'Join by code')),
           list),
+        h('div', { class: 'card stack' },
+          h('h2', null, 'On your own'),
+          h('div', { class: 'small muted' }, 'Practice any level against a ghost of your best run, or test a multiplayer map you are making.'),
+          h('div', { class: 'row' },
+            h('button', { class: 'btn', onClick: () => { ui.view = 'levels'; render(); } }, 'Practice a level…'),
+            h('button', { class: 'btn ghost', onClick: () => { ui.view = 'maphelp'; render(); } }, 'Making multiplayer maps'))),
         h('div', { class: 'card stack' },
           h('h2', null, 'Starting the game'),
           h('div', { class: 'small muted' }, "Pressing Play on Happy Wheels in Steam opens Multiplayer once the launcher has set it up (it asks the first time). You can also start it from a desktop shortcut."),
@@ -383,10 +359,11 @@ export function createOverlay(mp, bridge, tx) {
       h('div', { class: 'avatar ai' }, 'AI'),
       h('div', null,
         h('div', null, p.name, h('span', { class: 'badge ai' }, 'AI')),
-        h('div', { class: 'status', title: 'AI racers drive real runs other players uploaded for this level' },
-          p.runBy ? `${charName(p.character)} · run by ${p.runBy}`
+        h('div', { class: 'status', title: d === 'mine' ? "Drives the host's best run on this level" : 'AI racers drive real runs other players uploaded for this level' },
+          p.runBy && d === 'mine' ? `${charName(p.character)} · ${mp.isHost ? 'your' : `${p.runBy}'s`} best run`
+            : p.runBy ? `${charName(p.character)} · run by ${p.runBy}`
             : p.prep === 'searching' ? 'finding a run…'
-              : p.prep === 'none' ? 'no run for this level'
+              : p.prep === 'none' ? (d === 'mine' ? (mp.isHost ? "you haven't finished this level yet" : 'the host has no run on this level') : 'no run for this level')
                 : `${DIFFICULTY_NAMES[d]} difficulty`)),
       editable
         ? h('div', { class: 'row' },
@@ -414,8 +391,9 @@ export function createOverlay(mp, bridge, tx) {
     const isHost = p.id === mp.hostId;
     const statusText = {
       lobby: p.ready || isHost ? '' : 'not ready', loading: 'loading…', ready: 'at the start line', racing: 'racing',
-      finished: `finished ${fmtTime(p.finishMs)}`, dnf: 'did not finish', spectating: 'watching',
+      finished: `finished ${fmtTime(p.finishMs)}`, dnf: 'did not finish', spectating: 'watching', dead: 'out',
     }[p.status] ?? p.status;
+    const actions = hostActions(c, p);
     return h('div', { class: 'player' },
       avatarImg(p.id),
       h('div', null,
@@ -424,7 +402,7 @@ export function createOverlay(mp, bridge, tx) {
           p.id === mp.self.id ? h('span', { class: 'badge' }, 'you') : null,
           p.gameVersion && p.gameVersion !== bridge.gameVersion() ? h('span', { class: 'badge', title: 'Their Happy Wheels version differs from yours; physics may not match. Update the game in Steam.' }, `game v${p.gameVersion}`) : null),
         h('div', { class: 'status' }, charName(p.character))),
-      h('div', { class: 'status' }, statusText));
+      actions && ui.menuFor === p.id ? actions : h('div', { class: 'row', style: 'gap:6px' }, h('div', { class: 'status' }, statusText), actions));
   }
 
   /** Lobby members we haven't heard from yet (still connecting). */
@@ -469,24 +447,7 @@ export function createOverlay(mp, bridge, tx) {
     const charSel = h('select', { disabled: !!charLocked || inRace, onChange: (e) => mp.setCharacter(Number(e.target.value)) },
       charNames().map((n, i) => h('option', { value: i + 1, selected: mp.prefs.character === i + 1 }, n)));
 
-    const settings = h('div', { class: 'card stack' },
-      h('div', { class: 'label' }, 'Race rules'),
-      h('label', { class: 'toggle' },
-        h('input', { type: 'checkbox', checked: mp.settings.collisions, disabled: !hostMode || inRace, onChange: (e) => mp.setCollisions(e.target.checked) }),
-        h('span', null, 'Collisions between players')),
-      h('div', { class: 'small muted' }, mp.settings.collisions ? 'Racers can bump into each other.' : 'Other racers are see-through ghosts you pass through.'),
-      h('div', { class: 'row' }, h('span', { class: 'small muted' }, 'Character:'),
-        hostMode && !(lvl && lvl.forceChar)
-          ? h('select', { disabled: inRace, onChange: (e) => mp.setForceCharacter(Number(e.target.value)) },
-            [0, ...charNames().map((_, i) => i + 1)].map((i) => h('option', { value: i, selected: mp.settings.forceCharacter === i }, i ? `Everyone: ${charName(i)}` : 'Players choose')))
-          : h('span', null, lvl && lvl.forceChar ? `${charName(lvl.character)} (set by level)` : charName(mp.settings.forceCharacter))),
-      h('div', { class: 'row' }, h('span', { class: 'small muted' }, 'After the first finish, others get'),
-        hostMode
-          ? h('select', { disabled: inRace, onChange: (e) => mp.setGrace(Number(e.target.value)) },
-            [15, 30, 45, 60, 90, 120, 300].map((s) => h('option', { value: s, selected: mp.settings.graceSec === s }, `${s}s`)))
-          : h('span', null, `${mp.settings.graceSec}s`),
-        h('span', { class: 'small muted' }, 'to finish.')));
-
+    const settings = rulesCard(c, hostMode, inRace);
     let action;
     const joinButton = () => h('button', { class: 'btn green big', onClick: () => { mp.joinRace(); toggle(false); } },
       mp.race.participants.includes(mp.self.id) ? 'Rejoin race' : 'Join race in progress');
@@ -511,14 +472,16 @@ export function createOverlay(mp, bridge, tx) {
     return [
       header(mp.settings.name || 'Race lobby'),
       h('div', { class: 'body', key: 'lobbybody' },
+        soloCard(c),
         h('div', { class: 'cols' },
           h('div', { class: 'stack' },
             h('div', { class: 'card stack' },
-              h('div', { class: 'row between' }, h('div', { class: 'label' }, `Players (${mp.lobby.members.length}${mp.botPlayers().length ? ` + ${mp.botPlayers().length} AI` : ''})`),
+              h('div', { class: 'row between' }, h('div', { class: 'row', style: 'gap:8px' }, h('div', { class: 'label', style: 'margin:0' }, `Players (${mp.lobby.members.length}${mp.botPlayers().length ? ` + ${mp.botPlayers().length} AI` : ''})`), lockToggle(c)),
                 h('div', { class: 'row' },
                   h('span', { class: 'small muted' }, 'Code'), h('span', { class: 'code' }, lobbyCode(mp.lobby.id)),
                   h('button', { class: 'btn ghost', onClick: () => copy(lobbyCode(mp.lobby.id), 'Lobby code') }, 'Copy'))),
               players,
+              mp.botPlayers().length && mp.effectiveRules().aiReason ? h('div', { class: 'small warn' }, `AI racers sit this one out: ${mp.effectiveRules().aiReason}.`) : null,
               botAdder(),
               h('div', { class: 'row' },
                 h('button', { class: 'btn', onClick: () => { mp.invite(); toast('If the Steam invite window does not open, send your friends the lobby code instead.'); } }, 'Invite Steam friends'),
@@ -532,8 +495,12 @@ export function createOverlay(mp, bridge, tx) {
               h('div', { class: 'row' }, h('span', { class: 'small muted' }, 'Your character'), charSel),
               action),
             controls ? h('div', { class: 'card row' }, h('span', { class: 'small muted' }, 'Tired of this level?'), controls) : null,
+            voteCard(c),
             levelSummary(lvl, hostMode && !inRace),
+            mapCard(c),
             settings,
+            cupCard(c),
+            boardCard(c),
             hostMode && mp.phase === 'results' ? h('button', { class: 'btn ghost', title: 'Everyone leaves the level and goes back to the lobby', onClick: () => mp.backToLobby() }, 'Back to lobby (everyone)') : null))),
     ];
   }
@@ -567,9 +534,10 @@ export function createOverlay(mp, bridge, tx) {
         h('span', null, l.forceChar ? `Character: ${charName(l.character)}` : 'Any character'),
         mp.playedLevels.has(l.id) ? h('span', { class: 'raced' }, '✓ raced in this lobby') : null),
       l.comments ? h('div', { class: 'desc' }, l.comments) : null,
-      h('div', { class: 'row' },
+      mp.lobby && mp.isHost ? h('div', { class: 'row' },
         h('button', { class: 'btn green', onClick: () => use(idle) }, idle ? 'Race it now' : 'Use this level'),
-        idle ? h('button', { class: 'btn ghost', onClick: () => use(false) }, 'Set, start later') : null));
+        idle ? h('button', { class: 'btn ghost', onClick: () => use(false) }, 'Set, start later') : null) : null,
+      detailsExtras(c, l));
   }
 
   function levelsView() {
@@ -673,6 +641,8 @@ export function createOverlay(mp, bridge, tx) {
     patch(resultsLayer, mp.race && mp.phase === 'results' && !ui.resultsHidden && !ui.open && bridge.session && bridge.raceMode ? results(mp.race) : null);
 
     renderTip();
+    const notes = ui.whatsNew ? CHANGELOG : [];
+    patch(modalLayer, notes.length ? whatsNewModal(c, notes, closeWhatsNew) : null);
 
     // While the game's own pause menu is open during a race, offer skipping the level.
     const paused = !!(bridge.session && bridge.session.paused);
@@ -683,11 +653,13 @@ export function createOverlay(mp, bridge, tx) {
     const inLobby = !!mp.lobby;
     pill.classList.toggle('live', inLobby);
     pill.classList.toggle('compact', !!bridge.session);
+    pill.hidden = ui.open; // the panel has its own close button
     patch(pill, h('span', { class: 'dot' }), 'MULTIPLAYER', inLobby ? h('span', { class: 'sub' }, `${mp.lobby.members.length} in lobby`) : null);
 
     if (!ui.open) { patch(panelLayer); lastPanelHtml = ''; return; }
-    if (ui.view === 'levels' && !(inLobby && mp.isHost)) ui.view = 'main';
-    const panel = h('div', { class: 'panel' }, ui.view === 'levels' ? levelsView() : inLobby ? lobbyView() : browserView());
+    if (ui.view === 'levels' && inLobby && !mp.isHost) ui.view = 'main';
+    const view = { levels: levelsView, settings: () => settingsView(c), stats: () => statsView(c), maphelp: () => mapHelpView(c) }[ui.view];
+    const panel = h('div', { class: 'panel' }, view ? view() : inLobby ? lobbyView() : browserView());
     const html = panel.outerHTML;
     if (html === lastPanelHtml) return; // nothing visible changed: keep the live DOM (hover, scroll, focus)
     lastPanelHtml = html;
@@ -741,54 +713,142 @@ export function createOverlay(mp, bridge, tx) {
       }
       if (race.goAt != null && now >= race.goAt && bridge.session) {
         const mine = race.finishes[mp.self.id];
-        hud.append(h('div', { class: 'timer' }, fmtTime(mine != null ? mine : now - race.goAt)));
-        if (race.deadline && mp.phase === 'racing') {
-          const left = Math.max(0, Math.ceil((race.deadline - now) / 1000));
-          hud.append(h('div', { class: 'hint', style: 'bottom: 34px' }, `Race ends in ${left}s`));
-        }
-        hud.append(h('div', { class: 'hint' }, `${bridge.checkpoint ? 'R = back to your last checkpoint' : 'R = restart from the start line'}  ·  Esc = pause / skip level  ·  F2 = lobby`));
+        const died = race.deaths[mp.self.id];
+        hud.append(h('div', { class: 'timer' }, fmtTime(mine != null ? mine : died != null ? died : now - race.goAt)));
+        hud.append(...raceExtras(c, race));
+        const dl = deadlineHint(c, race);
+        if (dl) hud.append(dl);
+        const r = bridge.restartMode;
+        const restart = r === 'off' ? 'No restarts' : bridge.checkpoint && r === 'checkpoint' ? 'R: back to checkpoint' : 'R: restart';
+        const done = canSpectate() && bridge.puppets.size ? '  ·  Tab: watch others' : '';
+        const chat = mp.prefs.emoteKeys ? '  ·  1-6: quick chat' : '';
+        hud.append(h('div', { class: 'hint' }, `${restart}  ·  Esc: pause / skip  ·  F2: lobby${done}${chat}`));
       }
       hud.append(standings(race));
+    } else if (solo && solo.active && bridge.session) {
+      hud.append(...soloHud(c));
+      if (solo.test) hud.append(testPanel(c));
     }
+    hud.style.setProperty('--hud', String(mp.prefs.hudScale || 1));
   }
 
   function standings(race) {
-    const rows = race.participants.map((id) => mp.players.get(id)).filter(Boolean)
-      .map((p) => ({ p, ms: race.finishes[p.id], dnf: race.dnf.has(p.id) }))
-      .sort((a, b) => (a.ms ?? Infinity) - (b.ms ?? Infinity) || (a.dnf - b.dnf));
-    return h('div', { class: 'standings' }, rows.map((r, i) => h('div', { class: 'st' },
-      h('span', { class: 'pos' }, r.ms != null ? `${i + 1}.` : '·'),
-      h('span', { class: r.p.id === mp.self.id ? 'me' : '' }, r.p.name),
-      h('span', { class: 'muted' }, r.ms != null ? fmtTime(r.ms) : r.dnf ? 'DNF' : r.p.status === 'loading' ? '…' : ''))));
+    const survival = race.rules.mode === 'survival';
+    const rows = rankRace(race).filter((r) => mp.players.has(r.id));
+    return h('div', { class: 'standings' }, rows.map((r) => {
+      const p = mp.players.get(r.id);
+      const text = r.ms != null ? fmtTime(r.ms)
+        : survival && r.dead ? `out ${fmtTime(r.deadMs)}`
+          : r.dnf ? 'DNF' : p.status === 'loading' ? '…' : r.progress > 0 ? progressText(r.progress) : '';
+      return h('div', { class: `st ${survival && r.dead ? 'out' : ''} ${bridge.spectating === r.id ? 'watched' : ''}` },
+        h('span', { class: 'pos' }, r.ms != null || (survival && r.dead) ? `${r.place}.` : '·'),
+        h('span', { class: r.id === mp.self.id ? 'me' : '' }, p.name),
+        h('span', { class: 'muted' }, text));
+    }));
+  }
+
+  /** A racer's result text: time, survival, or how far they got. */
+  function resultText(r, race) {
+    if (r.ms != null) return fmtTime(r.ms);
+    if (race.rules.mode === 'survival') return r.dead ? `out at ${fmtTime(r.deadMs)}` : r.dnf ? 'left' : 'survived';
+    if (r.dnf) return 'DNF';
+    return r.progress > 0 ? progressText(r.progress) : 'DNF';
+  }
+
+  function progressText(p) {
+    const info = bridge.courseInfo();
+    if (info.laps > 1 && info.total) {
+      const lap = Math.floor(p / (info.total + 1)) + 1;
+      return `lap ${lap}, ${p % (info.total + 1)} checkpoint${p % (info.total + 1) === 1 ? '' : 's'}`;
+    }
+    return `${p} checkpoint${p === 1 ? '' : 's'}`;
   }
 
   function results(race) {
-    const rows = race.participants.map((id) => mp.players.get(id)).filter(Boolean)
-      .map((p) => ({ p, ms: race.finishes[p.id] }))
-      .sort((a, b) => (a.ms ?? Infinity) - (b.ms ?? Infinity));
+    const rows = rankRace(race).filter((r) => mp.players.has(r.id));
+    const cup = mp.settings.cup;
+    const cupRace = race.cupIndex >= 0 && (cup.active || cup.done);
+    const lastCupRace = cupRace && race.cupIndex + 1 >= cup.levels.length;
     return h('div', { class: 'results' },
-      h('h1', null, 'Results'),
-      rows.map((r, i) => h('div', { class: `r ${i === 0 && r.ms != null ? 'first' : ''}` },
-        h('span', { class: 'p' }, r.ms != null ? `${i + 1}` : '-'),
-        h('span', null, r.p.name),
-        h('span', null, r.ms != null ? fmtTime(r.ms) : 'DNF'))),
+      h('h1', null, race.rules.mode === 'survival' ? 'Survival results' : 'Results'),
+      cupRace ? h('div', { class: 'small muted', style: 'text-align:center; margin:-6px 0 8px' }, `Cup race ${race.cupIndex + 1} of ${cup.levels.length}`) : null,
+      rows.map((r) => h('div', { class: `r ${r.place === 1 ? 'first' : ''} ${r.id === mp.self.id ? 'mine' : ''}` },
+        h('span', { class: 'p' }, r.place ? String(r.place) : '-'),
+        h('span', null, mp.players.get(r.id).name),
+        h('span', null, resultText(r, race)))),
+      voteCard(c),
       h('div', { class: 'row between', style: 'margin-top: 14px' },
         h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; render(); } }, 'Keep driving'),
         mp.isHost
-          ? h('div', { class: 'row' },
-            h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; ui.view = 'levels'; toggle(true); } }, 'Choose level'),
-            h('button', { class: 'btn', onClick: () => act(async () => {
-              const pick = await mp.randomLevel({ start: true });
-              if (pick) toast(`Next up: ${pick.name}`);
-            }) }, 'Random new level'),
-            h('button', { class: 'btn green', onClick: () => mp.startRace() }, 'Race again'))
-          : h('span', { class: 'small muted' }, 'Waiting for the host…')));
+          ? (cup.active && cupRace && !lastCupRace
+            ? h('div', { class: 'row' },
+              h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; toggle(true); } }, 'Cup standings'),
+              h('button', { class: 'btn green', disabled: cup.scored !== cup.index, onClick: () => mp.cupNext() }, `Next race (${cup.index + 2}/${cup.levels.length})`))
+            : mp.settings.vote ? h('span', { class: 'small muted' }, 'Voting…')
+              : h('div', { class: 'row' },
+                h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; ui.view = 'levels'; toggle(true); } }, 'Choose level'),
+                h('button', { class: 'btn ghost', title: 'Everyone votes between three random levels', onClick: () => mp.voteStart().catch((e) => toast(e.message, 'error')) }, 'Vote'),
+                h('button', { class: 'btn', onClick: () => act(async () => {
+                  const pick = await mp.randomLevel({ start: true });
+                  if (pick) toast(`Next up: ${pick.name}`);
+                }) }, 'Random'),
+                h('button', { class: 'btn green', onClick: () => mp.startRace() }, 'Race again')))
+          : h('span', { class: 'small muted' }, mp.settings.vote ? 'Vote for the next level!' : 'Waiting for the host…')),
+      lastCupRace && cup.done ? h('div', { class: 'winner', style: 'margin-top:10px' }, `🏆 ${cupWinnerText(cup)}`) : null);
   }
 
+  /** Screen position (CSS pixels) of a point in level pixels, or null if the level isn't drawn. */
+  function projector(s) {
+    const renderer = hookRenderer();
+    const view = renderer && renderer.view;
+    const cont = s && s.containerSprite && s.containerSprite._pixiSprite;
+    if (!view || !cont || !cont.worldTransform) return null;
+    const rect = view.getBoundingClientRect();
+    const sx = rect.width / renderer.screen.width;
+    const sy = rect.height / renderer.screen.height;
+    const wt = cont.worldTransform;
+    const project = (x, y) => { const g = wt.apply({ x, y }); return { x: rect.left + g.x * sx, y: rect.top + g.y * sy }; };
+    const scale = (s.level && s.level.m_physScale) || s.m_physScale || 30;
+    return { project, pxPerMeter: scale * Math.abs(wt.a) * sx };
+  }
+
+  const markerEls = new Map();
+  function updateMarkers() {
+    const s = bridge.session;
+    const test = !!(solo && solo.active && solo.test);
+    const show = s && bridge.raceMode && (test || mp.prefs.markers);
+    const tags = show ? bridge.mapTags() : null;
+    const proj = tags ? projector(s) : null;
+    const course = { ...bridge.courseInfo(), reachedSet: bridge.course.reached };
+    drawMarkers(markers, markerEls, proj ? proj.project : () => null, proj ? proj.pxPerMeter : 0, proj ? tags : null, course, test);
+  }
+
+  function bubbleFor(id) {
+    const b = ui.bubbles.get(id);
+    if (!b) return null;
+    if (performance.now() > b.until) { ui.bubbles.delete(id); return null; }
+    return b.text;
+  }
+
+  let selfBubble = null;
   function updateTags() {
+    updateMarkers();
     const s = bridge.session;
     const seen = new Set();
-    if (s && bridge.puppets.size) {
+    // Our own quick-chat bubble, above our head.
+    const mine = mp.self && bubbleFor(mp.self.id);
+    const ch = s && s.character;
+    const head = mine && ch && (ch.head1Body || ch.chestBody);
+    const proj = head ? projector(s) : null;
+    if (proj) {
+      const scale = (s.level && s.level.m_physScale) || s.m_physScale || 30;
+      const p = head.m_xf.position;
+      const at = proj.project(p.x * scale, p.y * scale);
+      if (!selfBubble) { selfBubble = h('div', { class: 'tag selfbubble' }); tags.append(selfBubble); }
+      selfBubble.textContent = mine;
+      selfBubble.style.left = `${at.x}px`; selfBubble.style.top = `${at.y - 30}px`;
+    } else if (selfBubble) { selfBubble.remove(); selfBubble = null; }
+    if (s && bridge.puppets.size && (mp.prefs.nameTags || ui.bubbles.size)) {
       const renderer = hookRenderer();
       const view = renderer && renderer.view;
       const cont = s.containerSprite && s.containerSprite._pixiSprite;
@@ -807,9 +867,15 @@ export function createOverlay(mp, bridge, tx) {
           y = Math.max(24, Math.min(innerHeight - 8, y));
           let el = tagEls.get(id);
           if (!el) { el = h('div', { class: 'tag' }); tagEls.set(id, el); tags.append(el); }
-          const name = mp.players.get(id)?.name || 'Player';
-          if (el.textContent !== name) el.textContent = name;
+          const bubble = bubbleFor(id);
+          if (!mp.prefs.nameTags && !bubble) continue;
+          const name = id === GHOST_ID ? 'Your best' : mp.players.get(id)?.name || 'Player';
+          const text = bubble ? `${name}: ${bubble}` : name;
+          if (el.textContent !== text) el.textContent = text;
           el.classList.toggle('edge', off);
+          el.classList.toggle('bubble', !!bubble);
+          el.classList.toggle('ghostTag', id === GHOST_ID);
+          el.classList.toggle('watched', bridge.spectating === id);
           el.style.left = `${x}px`; el.style.top = `${y}px`;
           seen.add(id);
         }
@@ -841,11 +907,13 @@ export function createOverlay(mp, bridge, tx) {
     if (evt && evt.toast) toast(evt.toast, evt.kind);
     else if (evt && evt.chat) { if (!ui.open) toast(`${evt.chat.name}: ${evt.chat.text}`); }
     else if (evt && evt.openPanel) { ui.view = 'main'; toggle(true); }
+    else if (evt && evt.emote) { ui.bubbles.set(evt.emote.id, { text: evt.emote.text, until: performance.now() + 3500 }); }
     else render();
   });
 
   // Keep the lobby list fresh while it's on screen.
   setInterval(() => { if (ui.open && !mp.lobby && !ui.loadingLobbies) refreshLobbies(); }, 8000);
+  if (notesSince(mp.prefs.lastSeenVersion, tx.modVersion || '0').length) ui.whatsNew = true;
   render();
   requestAnimationFrame(hudFrame);
   return { toggle, toast, setRendererGetter };

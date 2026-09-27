@@ -9,6 +9,7 @@
 // handed to physics so it comes to rest naturally instead of freezing in place.
 
 import { findRun, STEP_MS } from '../game/replays.js';
+import { bestRun } from '../game/runs.js';
 import { sampleBodies } from '../game/character.js';
 import { encodeBotState, botSlot } from './protocol.js';
 import { log } from '../log.js';
@@ -48,10 +49,19 @@ export class BotDriver {
   async findRuns(levelId, bots, cancelled, onProgress) {
     const used = new Set();
     const runs = [];
+    const out = new Map();
     let reason = '';
+    const reasons = new Map();
     for (const p of bots) {
       if (cancelled()) return null;
       if (onProgress) onProgress(p.id, 'searching');
+      if (p.bot.difficulty === 'mine') {
+        // "Your best": the host's own best run on this level, kept as it is.
+        const run = await bestRun(levelId).catch(() => null);
+        out.set(p.id, run);
+        if (!run) reasons.set(p.id, "you haven't finished this level yet");
+        continue;
+      }
       let run = null;
       try {
         run = await findRun(levelId, p.bot.difficulty, { exclude: used, cancelled });
@@ -63,10 +73,9 @@ export class BotDriver {
       if (run) { used.add(run.replayId); runs.push(run); }
     }
     runs.sort((a, b) => a.finishStep - b.finishStep);
-    const order = [...bots].sort((a, b) => RANK[a.bot.difficulty] - RANK[b.bot.difficulty]);
-    const out = new Map();
+    const order = bots.filter((p) => p.bot.difficulty !== 'mine').sort((a, b) => RANK[a.bot.difficulty] - RANK[b.bot.difficulty]);
     order.forEach((p, i) => out.set(p.id, runs[i] || null));
-    return { runs: out, reason };
+    return { runs: out, reason, reasons };
   }
 
   /** Host, in the lobby: get the runs ready in the background so Start race doesn't wait. */
@@ -81,7 +90,7 @@ export class BotDriver {
     (async () => {
       const found = await this.findRuns(levelId, bots, cancelled, (id, state) => this.mp.botPrep(id, state));
       if (!found || cancelled()) return;
-      this.prefetched = { key, runs: found.runs };
+      this.prefetched = { key, found };
       for (const [id, run] of found.runs) this.mp.botPrep(id, run ? 'ready' : 'none', run);
     })().catch((e) => log.warn('AI: prefetch failed', e && e.message));
   }
@@ -96,14 +105,14 @@ export class BotDriver {
     this.timer = setInterval(() => this.tick(), STEP_MS);
     const cancelled = () => token !== this.token || this.mp.race !== race;
     const key = lineupKey(race.level.id, bots);
-    const ready = this.prefetched && this.prefetched.key === key ? { runs: this.prefetched.runs, reason: '' } : null;
+    const ready = this.prefetched && this.prefetched.key === key ? this.prefetched.found : null;
     (async () => {
       const found = ready || await this.findRuns(race.level.id, bots, cancelled);
       if (!found || cancelled()) return;
       for (const p of bots) {
         if (!this.mp.players.has(p.id)) continue;
         const run = found.runs.get(p.id);
-        if (!run) { this.mp.botFailed(p.id, found.reason); continue; }
+        if (!run) { this.mp.botFailed(p.id, (found.reasons && found.reasons.get(p.id)) || found.reason); continue; }
         // Ready after GO (slow to prepare): it starts from the start line now, behind everyone.
         const now = this.mp.clock.now();
         const offset = race.goAt != null && now > race.goAt ? now - race.goAt : 0;

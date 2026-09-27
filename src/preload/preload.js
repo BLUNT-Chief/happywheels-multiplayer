@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('hwmp', {
   self: () => ipcRenderer.invoke('hwmp:self'),
   avatar: (id) => ipcRenderer.invoke('hwmp:avatar', String(id)),
   openExternal: (url) => ipcRenderer.send('hwmp:openExternal', String(url)),
+  openLogs: () => ipcRenderer.send('hwmp:openLogs'),
   lobby: {
     create: (opts) => ipcRenderer.invoke('hwmp:lobby:create', opts),
     join: (id) => ipcRenderer.invoke('hwmp:lobby:join', String(id)),
