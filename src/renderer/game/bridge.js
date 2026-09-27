@@ -141,7 +141,8 @@ export const bridge = {
     const entry = this.puppetSpecs.get(peerId);
     if (!entry || !this.session || !this.session.m_world) return null;
     const p = new Puppet(this.session, entry.spec);
-    p.alpha = this.collisions ? UNARMED_ALPHA : this.ghostAlpha;
+    p.ghost = !!entry.ghost;
+    p.alpha = this.collisions && !p.ghost ? UNARMED_ALPHA : this.ghostAlpha;
     try {
       p.spawn();
     } catch (e) {
@@ -176,6 +177,17 @@ export const bridge = {
     if (p) p.pushSnapshot(t, data);
   },
 
+  /** A racer that should no longer be solid to anyone (an AI racer that finished its race). */
+  setPuppetGhost(peerId, on) {
+    const entry = this.puppetSpecs.get(peerId);
+    if (entry) entry.ghost = !!on;
+    const p = this.puppets.get(peerId);
+    if (!p) return;
+    p.ghost = !!on;
+    p.setAlpha(on || !this.collisions ? this.ghostAlpha : p.armed ? 1 : UNARMED_ALPHA);
+    if (this.session && this.session.m_world && !this.session.m_world.m_lock) p.refilter([...p.shapes]);
+  },
+
   /** Host AI driver: let a racer's puppet tumble under physics (free) or follow snapshots again. */
   setPuppetFree(peerId, free, push) {
     const p = this.puppets.get(peerId);
@@ -197,7 +209,7 @@ export const bridge = {
     this.collisions = !!on;
     for (const p of this.puppets.values()) {
       p.resetArming();
-      p.setAlpha(this.collisions ? UNARMED_ALPHA : this.ghostAlpha);
+      p.setAlpha(this.collisions && !p.ghost ? UNARMED_ALPHA : this.ghostAlpha);
     }
   },
 };
@@ -454,6 +466,7 @@ function armCollisions(session) {
   const mine = localBounds(session);
   if (!mine) return;
   for (const p of bridge.puppets.values()) {
+    if (p.ghost) continue;
     const was = p.armed;
     p.updateArming(mine, ARM_AFTER_STEPS);
     if (p.armed && !was) p.setAlpha(1);

@@ -61,6 +61,8 @@ class Puppet {
     this.clearSteps = new Map(); // body -> consecutive steps away from the local player
     // Free: physics moves this racer instead of snapshots (an AI racer tumbling after a hit).
     this.free = false;
+    // Ghost: never solid to the local player, even with collisions on (an AI racer that finished).
+    this.ghost = false;
   }
 
   spawn() {
@@ -338,7 +340,7 @@ export function makeContactFilter(defaultFilter, opts) {
       const ps = pa ? a : b;
       const other = pa ? b : a;
       if (other.IsSensor?.() || other.m_isSensor || ps.m_isSensor) return false;
-      if (opts.isLocalShape(other)) return opts.collisions() && p.armedBodies.has(ps.m_body);
+      if (opts.isLocalShape(other)) return opts.collisions() && !p.ghost && p.armedBodies.has(ps.m_body);
       const ob = other.m_body;
       // Free (non network-driven) puppet parts may rest on static level geometry; nothing else.
       // A racer handed to physics (tumbling after a hit) lands on the ground too.

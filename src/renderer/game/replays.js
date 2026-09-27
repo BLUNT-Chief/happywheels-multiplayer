@@ -10,8 +10,21 @@ import { log } from '../log.js';
 export const STEP_MS = 1000 / 30;     // the game steps its physics 30 times a second
 const MAX_STEPS = 30 * 60 * 4;        // skip runs longer than 4 minutes
 const COAST_STEPS = 45;               // keep recording briefly after the finish
-const CHUNK_STEPS = 60;               // physics steps per slice, so the game stays responsive
+const CHUNK_STEPS = 30;               // physics steps per slice, so the game stays responsive
 const MAX_TRIES = 4;                  // candidate replays simulated per AI racer at most
+const MAX_FALLBACK_TRIES = 2;         // of those, ones that aren't expected to play back exactly
+const LEVEL_FALLBACK_FAILS = 3;       // after this many fail on a level, stop trying them there
+const RELIABLE_VERSION = 1.98;        // replays from older game versions drift even on the same machine
+
+/**
+ * A replay plays back exactly when it was recorded on a computer with the same floating-point
+ * "architecture" (the game's replay browser marks the others inaccurate) by a recent version of
+ * the game: older versions had slightly different physics, so their runs drift and crash.
+ */
+function reliable(r) {
+  const S = Game.Settings || {};
+  return r.arch === String(S.architecture || '') && r.version >= RELIABLE_VERSION;
+}
 // The game's server (Cloudflare) blocks a whole connection for 24 hours, level loading included,
 // after a burst (about 90 requests in 30 s did it; 45 in 10 s did not). AI racers stay far below that
 // and stop completely if the server ever pushes back.
@@ -338,7 +351,7 @@ function levelEntry(levelId) {
         lists = { newest, fastest };
         cachePut(`lists2:${levelId}`, lists);
       }
-      const entry = { loader: null, newest: lists.newest, fastest: lists.fastest, runs: new Map(), errors: new Set() };
+      const entry = { loader: null, newest: lists.newest, fastest: lists.fastest, runs: new Map(), errors: new Set(), fallbackFails: 0 };
       entry.getLoader = () => (entry.loader ||= levelRecord(levelId).then(loadLevel).catch((e) => { entry.loader = null; throw e; }));
       return entry;
     })();
@@ -350,31 +363,34 @@ function levelEntry(levelId) {
 }
 
 /**
- * Candidate replays for a difficulty, best first. Targets come from the level's own replays:
- * Medium runs about like a typical uploaded run, Easy slower, Hard like the quick ones, Expert is
- * the fastest run that still works.
+ * Candidate replays for a difficulty, best first.
+ *
+ * A replay plays back exactly only on a computer with the same floating-point "architecture" as
+ * the one it was recorded on (the game's replay browser marks the others inaccurate); replays from
+ * other machines or older game versions often drift off course. So replays are grouped by how
+ * likely they are to work, and each difficulty takes a position within the best group: Expert its
+ * fastest run, Hard a quick one, Medium a typical one, Easy a slow one. Later groups are fallbacks.
  */
+const DIFFICULTY_POSITION = { expert: 0, hard: 0.25, medium: 0.5, easy: 0.8 };
+
 function candidates(entry, difficulty) {
   const byId = new Map();
   for (const r of [...entry.fastest, ...entry.newest]) byId.set(r.id, r);
   const pool = [...byId.values()];
-  if (!pool.length) return [];
-  // A replay plays back exactly only on a computer with the same floating-point "architecture" as
-  // the one it was recorded on (the game's replay browser marks the others inaccurate). Those
-  // come first; replays from other machines or older game versions often drift off course.
-  const S = Game.Settings || {};
-  const mine = String(S.architecture || '');
-  const current = Number(S.CURRENT_VERSION) || 0;
-  const oldPenalty = (r) => (r.arch === mine ? 0 : 1.2) + (r.version >= current ? 0 : r.version >= 1.9 ? 0.3 : 0.6);
-  if (difficulty === 'expert') return pool.sort((a, b) => a.steps * (1 + oldPenalty(a)) - b.steps * (1 + oldPenalty(b)));
-  const sample = (entry.newest.length >= 10 ? entry.newest : pool).map((r) => r.steps).sort((a, b) => a - b);
-  const at = (q) => sample[Math.min(sample.length - 1, Math.floor(q * (sample.length - 1)))];
-  const fastest = Math.min(...pool.map((r) => r.steps));
-  const target = difficulty === 'easy' ? at(0.5) * 1.8
-    : difficulty === 'hard' ? Math.max(fastest * 1.1, at(0.2))
-      : at(0.5);
-  const score = (r) => Math.abs(Math.log(r.steps / target)) + oldPenalty(r);
-  return pool.sort((a, b) => score(a) - score(b));
+  const tier = (r) => (reliable(r) ? 0 : 1);
+  const q = DIFFICULTY_POSITION[difficulty] ?? 0.5;
+  const newestIds = new Set(entry.newest.map((r) => r.id));
+  const out = [];
+  for (let t = 0; t <= 1; t++) {
+    const group = pool.filter((r) => tier(r) === t);
+    if (!group.length) continue;
+    // Positions come from recent uploads when there are enough (the fastest list is all speedruns).
+    const recent = group.filter((r) => newestIds.has(r.id));
+    const sample = (recent.length >= 5 && difficulty !== 'expert' ? recent : group).map((r) => r.steps).sort((a, b) => a - b);
+    const target = sample[Math.round(q * (sample.length - 1))];
+    out.push(...group.sort((a, b) => Math.abs(Math.log(a.steps / target)) - Math.abs(Math.log(b.steps / target))));
+  }
+  return out;
 }
 
 /**
@@ -385,6 +401,7 @@ export async function findRun(levelId, difficulty, { exclude = new Set(), cancel
   const deadline = performance.now() + timeoutMs;
   const entry = await levelEntry(levelId);
   let tries = 0;
+  let fallbackTries = 0;
   for (const rp of candidates(entry, difficulty)) {
     if (cancelled()) return null;
     if (exclude.has(rp.id) || entry.errors.has(rp.id)) continue;
@@ -398,7 +415,10 @@ export async function findRun(levelId, difficulty, { exclude = new Set(), cancel
       continue;
     }
     if (tries >= MAX_TRIES || performance.now() > deadline) break;
+    const fallback = !reliable(rp);
+    if (fallback && (fallbackTries >= MAX_FALLBACK_TRIES || entry.fallbackFails >= LEVEL_FALLBACK_FAILS)) break;
     tries++;
+    if (fallback) fallbackTries++;
     let result = null;
     try {
       const [data, loader] = await Promise.all([downloadReplay(rp.id, levelId), entry.getLoader()]);
@@ -410,8 +430,9 @@ export async function findRun(levelId, difficulty, { exclude = new Set(), cancel
     }
     if (result && result.outcome === 'cancelled') return null;
     const run = result && result.run;
-    log.info(`AI: replay ${rp.id} v${rp.version} by ${rp.author} (${difficulty}) ${run ? `finishes in ${(run.finishStep * STEP_MS / 1000).toFixed(2)}s` : `rejected (${result ? result.outcome : 'error'})`}`);
+    log.info(`AI: replay ${rp.id} v${rp.version}${fallback ? ' (fallback)' : ''} by ${rp.author} (${difficulty}) ${run ? `finishes in ${(run.finishStep * STEP_MS / 1000).toFixed(2)}s` : `rejected (${result ? result.outcome : 'error'})`}`);
     // Remember the verdict unless something went wrong along the way (network, cancelled).
+    if (!run && fallback && result && result.outcome !== 'cancelled') entry.fallbackFails++;
     if (result && (run || result.outcome === 'died' || result.outcome === 'ended')) {
       entry.runs.set(rp.id, run || null);
       cachePut(`run:${levelId}:${rp.id}`, run || null);

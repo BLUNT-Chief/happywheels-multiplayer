@@ -12,6 +12,7 @@ const MAX_RACERS = 16;
 
 const COUNTDOWN_MS = 3500;
 const READY_TIMEOUT_MS = 30000;
+const BOT_WAIT_MS = 6000;   // once the players are ready, AI racers get this long before GO anyway
 const PREF_KEY = 'hwmp.prefs';
 
 function loadPrefs() {
@@ -202,7 +203,7 @@ export class Multiplayer {
         phase: this.phase,
         settings: this.settings,
         race: this.race ? { id: this.race.id, level: this.race.level, participants: this.race.participants, goAt: this.race.goAt, finishes: this.race.finishes, dnf: [...this.race.dnf], deadline: this.race.deadline, collisions: this.race.collisions, forceCharacter: this.race.forceCharacter, skipVotes: [...this.race.skipVotes] } : null,
-        players: [...this.players.values()].map((p) => ({ id: p.id, ready: p.ready, status: p.status, character: p.character, ...(p.bot ? { bot: p.bot.difficulty, name: p.name, runBy: p.runBy || '' } : {}) })),
+        players: [...this.players.values()].map((p) => ({ id: p.id, ready: p.ready, status: p.status, character: p.character, ...(p.bot ? { bot: p.bot.difficulty, name: p.name, runBy: p.runBy || '', prep: p.prep || '' } : {}) })),
       };
       this.sendAll(snap);
       this.tx.lobby.setData(this.lobbySummary()).catch(() => {});
@@ -218,6 +219,7 @@ export class Multiplayer {
   // ---- host actions ---------------------------------------------------------------------------
   setLevel(level) {
     if (!this.isHost) return;
+    setTimeout(() => this.schedulePrefetch(), 0);
     this.settings.level = level && V.int(level.id, 1, 2e9) ? { id: level.id, name: cleanText(level.name || `Level ${level.id}`, 80), author: cleanText(level.author || '', 40), character: level.character | 0, forceChar: !!level.forceChar } : null;
     this.broadcastLobby(); this.changed();
   }
@@ -309,6 +311,7 @@ export class Multiplayer {
   hostGo() {
     if (!this.isHost || !this.race || this.phase !== 'loading') return;
     clearTimeout(this.readyTimer);
+    clearTimeout(this.botWaitTimer); this.botWaitTimer = null;
     const msg = { t: 'start', race: this.race.id, goAt: this.clock.now() + COUNTDOWN_MS };
     this.sendAll(msg);
     this.onCtrl(this.self.id, msg);
@@ -318,7 +321,18 @@ export class Multiplayer {
     if (!this.isHost || !this.race) return;
     const alive = this.race.participants.filter((id) => this.players.has(id));
     if (this.phase === 'loading') {
-      if (alive.length && alive.every((id) => this.players.get(id).status === 'ready' || this.race.dnf.has(id))) this.hostGo();
+      const ready = (id) => this.players.get(id).status === 'ready' || this.race.dnf.has(id);
+      if (alive.length && alive.every(ready)) { this.hostGo(); return; }
+      // Players are ready but an AI racer is still finding its run: give it a moment, then go (it
+      // will start from the start line when ready, behind everyone).
+      const people = alive.filter((id) => !this.players.get(id).bot);
+      if (people.length && people.every(ready) && !this.botWaitTimer) {
+        const race = this.race.id;
+        this.botWaitTimer = setTimeout(() => {
+          this.botWaitTimer = null;
+          if (this.isHost && this.race && this.race.id === race && this.phase === 'loading') this.hostGo();
+        }, BOT_WAIT_MS);
+      }
       return;
     }
     if (this.phase !== 'racing' && this.phase !== 'countdown') return;
@@ -349,10 +363,12 @@ export class Multiplayer {
     p.bot = { difficulty };
     p.ready = true;
     p.runBy = '';
+    p.prep = '';
     this.players.set(id, p);
     this.prefs.botDifficulty = difficulty; savePrefs(this.prefs);
     this.broadcastLobby();
     this.changed();
+    this.schedulePrefetch();
   }
 
   setBotDifficulty(id, difficulty) {
@@ -361,8 +377,10 @@ export class Multiplayer {
     p.bot = { difficulty };
     p.name = `AI ${Number(id) - 100} · ${DIFFICULTY_NAMES[difficulty]}`;
     p.runBy = '';
+    p.prep = '';
     this.broadcastLobby();
     this.changed();
+    this.schedulePrefetch();
   }
 
   removeBot(id) {
@@ -373,12 +391,36 @@ export class Multiplayer {
     this.peerSerial.delete(id);
     this.broadcastLobby();
     this.changed();
+    this.schedulePrefetch();
   }
 
   /** Host: send a message on an AI racer's behalf (everyone treats it as coming from the racer). */
   botCtrl(id, msg) {
     this.sendAll({ ...msg, bot: id });
     this.onCtrl(id, msg);
+  }
+
+  /** A race is loading or running (not the lobby or the results screen). */
+  racing() { return ['loading', 'countdown', 'racing'].includes(this.phase); }
+
+  /** Host: in the lobby, get AI runs ready in the background (level or lineup changed). */
+  schedulePrefetch() {
+    clearTimeout(this.prefetchTimer);
+    if (!this.isHost || !this.settings.level || !this.botPlayers().length) return;
+    this.prefetchTimer = setTimeout(() => {
+      if (this.isHost && this.settings.level && !this.racing()) this.bots.prefetch(this.settings.level.id);
+    }, 1200);
+  }
+
+  /** Host: progress of the background search, shown in the lobby. */
+  botPrep(id, state, run) {
+    const p = this.players.get(id);
+    if (!p || !p.bot || this.racing()) return;
+    p.prep = state;
+    p.runBy = run ? run.author : '';
+    if (run) p.character = run.character;
+    this.broadcastLobby();
+    this.changed();
   }
 
   botReady(id, run) {
@@ -491,6 +533,7 @@ export class Multiplayer {
   // ---- race flow (all clients) -----------------------------------------------------------------
   resetRace(clearPuppets) {
     this.bots.stop();
+    clearTimeout(this.botWaitTimer); this.botWaitTimer = null;
     clearTimeout(this.goTimer); clearTimeout(this.readyTimer); clearTimeout(this.graceTimer);
     this.race = null;
     this.finished = false;
@@ -750,6 +793,7 @@ export class Multiplayer {
         if (race.finishes[from] != null) return;
         race.finishes[from] = m.ms;
         player.status = 'finished';
+        if (player.bot) this.bridge.setPuppetGhost(from, true);
         player.finishMs = m.ms;
         if (!self) this.toast(`${player.name} finished — ${fmtTime(m.ms)}`);
         if (this.isHost) {
@@ -866,6 +910,7 @@ export class Multiplayer {
         b.bot = { difficulty: sp.bot };
         b.name = cleanText(sp.name, 32) || 'AI';
         b.runBy = cleanText(sp.runBy, 32);
+        b.prep = ['searching', 'ready', 'none'].includes(sp.prep) ? sp.prep : '';
         b.ready = true;
       }
       for (const p of this.botPlayers()) if (!bots.has(p.id)) { this.players.delete(p.id); this.bridge.removePuppet(p.id); }

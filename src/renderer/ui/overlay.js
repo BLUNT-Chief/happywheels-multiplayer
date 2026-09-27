@@ -8,7 +8,19 @@ import { MAX_BOTS } from '../net/protocol.js';
 import { log } from '../log.js';
 
 // Tiny element builder. Extra props: key (stable id used to keep focus/scroll across redraws) and
-// onEnter (run when Enter is pressed in a text box).
+// onEnter (run when Enter is pressed in a text box). Event handlers are stored on the element and
+// called through one listener per event type, so updating the page in place (see morph) can swap
+// them without replacing the element.
+function dispatch(e) {
+  const fn = e.currentTarget.__handlers && e.currentTarget.__handlers[e.type];
+  if (fn) fn(e);
+}
+function listen(el, type) {
+  el.__types ||= new Set();
+  if (el.__types.has(type)) return;
+  el.__types.add(type);
+  el.addEventListener(type, dispatch);
+}
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
@@ -16,7 +28,11 @@ function h(tag, props, ...kids) {
     if (k === 'class') el.className = v;
     else if (k === 'key') el.dataset.key = v;
     else if (k === 'onEnter') el.__onEnter = v;
-    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (k.startsWith('on') && typeof v === 'function') {
+      const type = k.slice(2).toLowerCase();
+      (el.__handlers ||= {})[type] = v;
+      listen(el, type);
+    }
     else if (k === 'style') el.setAttribute('style', v);
     else if (k === 'value' || k === 'checked' || k === 'disabled' || k === 'selected') {
       el[k] = v;
@@ -25,6 +41,43 @@ function h(tag, props, ...kids) {
   }
   for (const c of kids.flat(Infinity)) if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
   return el;
+}
+
+/**
+ * Updates a live element to match a freshly built one, keeping the live nodes wherever the
+ * structure matches. A button under the mouse survives any redraw, so a click that straddles one
+ * still lands; focus, text selection, scroll and hover are kept as well.
+ */
+function morph(from, to) {
+  for (const a of [...from.attributes]) if (!to.hasAttribute(a.name)) from.removeAttribute(a.name);
+  for (const a of [...to.attributes]) if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
+  for (const k of ['checked', 'disabled', 'selected']) if (from[k] !== undefined && from[k] !== to[k]) from[k] = to[k];
+  if ('value' in to && from.value !== to.value && from !== from.getRootNode().activeElement) from.value = to.value;
+  from.__handlers = to.__handlers;
+  from.__onEnter = to.__onEnter;
+  if (to.__types) for (const t of to.__types) listen(from, t);
+  morphChildren(from, to);
+}
+
+function morphChildren(from, to) {
+  const olds = [...from.childNodes];
+  const news = [...to.childNodes];
+  news.forEach((n, i) => {
+    const o = olds[i];
+    if (!o) { from.appendChild(n); return; }
+    const same = o.nodeType === n.nodeType && o.nodeName === n.nodeName && (o.nodeType !== 1 || o.dataset.key === n.dataset.key);
+    if (!same) { from.replaceChild(n, o); return; }
+    if (o.nodeType === 1) morph(o, n);
+    else if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue;
+  });
+  for (let i = news.length; i < olds.length; i++) olds[i].remove();
+}
+
+/** Shows `nodes` in `layer`, updating what's already there in place. */
+function patch(layer, ...nodes) {
+  const next = document.createElement('div');
+  for (const n of nodes.flat()) if (n) next.append(n);
+  morphChildren(layer, next);
 }
 
 const lobbyCode = (id) => { try { return BigInt(id).toString(36).toUpperCase(); } catch { return String(id); } };
@@ -124,9 +177,8 @@ export function createOverlay(mp, bridge, tx) {
     tipLayer.replaceChildren();
   }
   function renderTip() {
-    tipLayer.replaceChildren();
-    if (tipSeen || ui.open || mp.lobby || bridge.session) return;
-    tipLayer.append(h('div', { class: 'tip', onClick: () => toggle(true) }, h('b', null, 'Race your friends!'), h('br'), 'Click MULTIPLAYER (or press F2) to create or join a lobby.'));
+    const show = !(tipSeen || ui.open || mp.lobby || bridge.session);
+    patch(tipLayer, show ? h('div', { class: 'tip', onClick: () => toggle(true) }, h('b', null, 'Race your friends!'), h('br'), 'Click MULTIPLAYER (or press F2) to create or join a lobby.') : null);
   }
 
   function toggle(v = !ui.open) {
@@ -317,7 +369,10 @@ export function createOverlay(mp, bridge, tx) {
       h('div', null,
         h('div', null, p.name, h('span', { class: 'badge ai' }, 'AI')),
         h('div', { class: 'status', title: 'AI racers drive real runs other players uploaded for this level' },
-          p.runBy ? `${charName(p.character)} · run by ${p.runBy}` : `${DIFFICULTY_NAMES[d]} difficulty`)),
+          p.runBy ? `${charName(p.character)} · run by ${p.runBy}`
+            : p.prep === 'searching' ? 'finding a run…'
+              : p.prep === 'none' ? 'no run for this level'
+                : `${DIFFICULTY_NAMES[d]} difficulty`)),
       editable
         ? h('div', { class: 'row' },
           h('select', { title: 'Difficulty', onChange: (e) => mp.setBotDifficulty(p.id, e.target.value) },
@@ -576,37 +631,35 @@ export function createOverlay(mp, bridge, tx) {
   function render() {
     // results modal (interactive, so only rebuilt on state changes)
     if (mp.phase !== 'results') ui.resultsHidden = false;
-    resultsLayer.replaceChildren();
-    if (mp.race && mp.phase === 'results' && !ui.resultsHidden && !ui.open && bridge.session && bridge.raceMode) resultsLayer.append(results(mp.race));
+    patch(resultsLayer, mp.race && mp.phase === 'results' && !ui.resultsHidden && !ui.open && bridge.session && bridge.raceMode ? results(mp.race) : null);
 
     renderTip();
 
     // While the game's own pause menu is open during a race, offer skipping the level.
-    raceMenuLayer.replaceChildren();
     const paused = !!(bridge.session && bridge.session.paused);
     const controls = paused && !ui.open ? raceControls() : null;
-    if (controls) raceMenuLayer.append(h('div', { class: 'race-menu' }, h('span', { class: 't' }, 'Stuck on this level?'), controls));
+    patch(raceMenuLayer, controls ? h('div', { class: 'race-menu' }, h('span', { class: 't' }, 'Stuck on this level?'), controls) : null);
 
     // pill
-    pill.replaceChildren(h('span', { class: 'dot' }), 'MULTIPLAYER');
     const inLobby = !!mp.lobby;
     pill.classList.toggle('live', inLobby);
     pill.classList.toggle('compact', !!bridge.session);
-    if (inLobby) pill.append(h('span', { class: 'sub' }, `${mp.lobby.members.length} in lobby`));
+    patch(pill, h('span', { class: 'dot' }), 'MULTIPLAYER', inLobby ? h('span', { class: 'sub' }, `${mp.lobby.members.length} in lobby`) : null);
 
-    if (!ui.open) { panelLayer.replaceChildren(); lastPanelHtml = ''; return; }
+    if (!ui.open) { patch(panelLayer); lastPanelHtml = ''; return; }
     if (ui.view === 'levels' && !(inLobby && mp.isHost)) ui.view = 'main';
     const panel = h('div', { class: 'panel' }, ui.view === 'levels' ? levelsView() : inLobby ? lobbyView() : browserView());
     const html = panel.outerHTML;
     if (html === lastPanelHtml) return; // nothing visible changed: keep the live DOM (hover, scroll, focus)
     lastPanelHtml = html;
 
-    // Swap in the new panel, carrying over scroll positions and the focused text box.
+    // Update the panel in place, carrying over scroll positions and the focused text box for any
+    // part that had to be rebuilt.
     const scrollers = new Map();
     for (const el of panelLayer.querySelectorAll('[data-key]')) scrollers.set(el.dataset.key, { top: el.scrollTop, atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4 });
     const focused = activeInput();
     const focus = focused && focused.dataset.key ? { key: focused.dataset.key, start: focused.selectionStart, end: focused.selectionEnd } : null;
-    panelLayer.replaceChildren(h('div', { class: 'scrim', onClick: () => toggle(false) }), panel);
+    patch(panelLayer, h('div', { class: 'scrim', onClick: () => toggle(false) }), panel);
     for (const el of panelLayer.querySelectorAll('[data-key]')) {
       const s = scrollers.get(el.dataset.key);
       if (el.dataset.key === 'chatlog' && (!s || s.atBottom)) el.scrollTop = el.scrollHeight;
@@ -614,7 +667,7 @@ export function createOverlay(mp, bridge, tx) {
     }
     if (focus) {
       const el = panelLayer.querySelector(`[data-key="${focus.key}"]`);
-      if (el) { el.focus(); try { el.setSelectionRange(focus.start, focus.end); } catch {} }
+      if (el && el !== activeInput()) { el.focus(); try { el.setSelectionRange(focus.start, focus.end); } catch {} }
     }
   }
 
@@ -731,11 +784,9 @@ export function createOverlay(mp, bridge, tx) {
 
   // ---- updates ----------------------------------------------------------------------------------
   function showUpdate(st) {
-    updateBox.replaceChildren();
-    if (!st || st.state !== 'ready') return;
-    updateBox.append(h('div', { class: 'update' },
+    patch(updateBox, st && st.state === 'ready' ? h('div', { class: 'update' },
       h('span', null, `Update ${st.version || ''} is ready.`),
-      h('button', { class: 'btn green', onClick: () => tx.update.install() }, 'Restart now')));
+      h('button', { class: 'btn green', onClick: () => tx.update.install() }, 'Restart now')) : null);
   }
   tx.update?.onStatus?.(showUpdate);
   tx.update?.status?.().then(showUpdate).catch(() => {});
