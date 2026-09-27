@@ -1,0 +1,43 @@
+# Builds the Windows installer and publishes it to GitHub Releases when a version tag is pushed.
+# Installed copies of the mod pick the new release up automatically (electron-updater).
+#
+#   npm version patch        # bumps package.json and creates the vX.Y.Z tag
+#   git push --follow-tags   # triggers this workflow
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Check tag matches package.json version
+        shell: bash
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $pkg"; exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Build and publish
+        run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional code signing (removes the SmartScreen warning). Add these repository secrets
+          # to enable it: a base64 .pfx certificate and its password.
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}

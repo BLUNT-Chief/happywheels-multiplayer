@@ -67,6 +67,8 @@ function main() {
   registerNetIpc(() => transport, isTrustedSender);
 
   ipcMain.handle('hwmp:version', () => MOD_VERSION);
+  // Steam launch option that makes Steam start the mod instead of the vanilla game (overlay + invites).
+  ipcMain.handle('hwmp:steamLaunchOption', (e) => (isTrustedSender(e) ? `"${process.execPath}" %command%` : null));
   ipcMain.on('hwmp:log', (e, level, message) => {
     if (!isTrustedSender(e)) return;
     const fn = level === 'error' ? log.error : level === 'warn' ? log.warn : log.info;

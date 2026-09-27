@@ -181,6 +181,15 @@ export function createOverlay(mp, bridge, tx) {
               act(() => mp.join(id));
             } }, 'Join by code')),
           list),
+        h('div', { class: 'card stack' },
+          h('h2', null, 'Steam overlay & invites (optional)'),
+          h('div', { class: 'small muted' }, 'Steam only shows its overlay and invite window in games it launches. In Steam, right-click Happy Wheels → Properties → Launch Options, paste this, and Steam will start the multiplayer mod instead. Clear it to go back to the normal game.'),
+          h('div', { class: 'row' }, h('button', { class: 'btn ghost', onClick: async () => {
+            const opt = await tx.steamLaunchOption().catch(() => null);
+            if (!opt) return;
+            await navigator.clipboard?.writeText(opt);
+            toast('Launch option copied. Paste it into Steam.');
+          } }, 'Copy Steam launch option'))),
         h('div', { class: 'small muted' }, 'Unofficial fan-made mod. Not affiliated with Fancy Force or Total Jerkface.')),
     ];
   }
