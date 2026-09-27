@@ -60,7 +60,10 @@ function post(file, body, bytes = false) {
   return run;
 }
 
-/** Replays uploaded for a level: { id, steps, character, version, author }. */
+/** Replays that never reached the finish are saved with the maximum length as their time. */
+const unfinishedSteps = () => Math.min(MAX_STEPS, Number(Game.Settings && Game.Settings.maxReplayFrames) || 6000);
+
+/** Replays uploaded for a level: { id, steps, character, version, arch, author }. */
 async function listReplays(levelId, sort) {
   const text = await post('replay.hw', `action=get_all_by_level&level_id=${levelId | 0}&page=1&sortby=${sort}`);
   if (text.slice(0, 8).includes('failure')) return [];
@@ -70,8 +73,9 @@ async function listReplays(levelId, sort) {
     steps: Number(e.getAttribute('ct')),
     character: Number(e.getAttribute('pc')),
     version: Number(e.getAttribute('vr')) || 0,
+    arch: String(e.getAttribute('ar') || ''),
     author: String(e.getAttribute('un') || '').slice(0, 32),
-  })).filter((r) => r.id > 0 && r.steps > 0 && r.steps < MAX_STEPS && Number.isInteger(r.character) && r.character >= 1 && r.character <= 11);
+  })).filter((r) => r.id > 0 && r.steps > 0 && r.steps < unfinishedSteps() && Number.isInteger(r.character) && r.character >= 1 && r.character <= 11);
 }
 
 /** The game's level record (with the author id its loader needs). */
@@ -267,7 +271,7 @@ async function simulate(loader, levelId, rp, replayData, cancelled) {
 // before cost the server nothing. Keyed by game version: an update can change the physics.
 
 const LIST_TTL_MS = 12 * 3600 * 1000;
-const MAX_CACHED = 200;
+const MAX_CACHED = 120;
 let dbPromise = null;
 
 function db() {
@@ -327,12 +331,12 @@ function levelEntry(levelId) {
   let p = levels.get(levelId);
   if (!p) {
     p = (async () => {
-      const stored = await cacheGet(`lists:${levelId}`);
+      const stored = await cacheGet(`lists2:${levelId}`);
       let lists = stored && Date.now() - stored.at < LIST_TTL_MS ? stored.value : null;
       if (!lists) {
         const [newest, fastest] = await Promise.all([listReplays(levelId, 'newest'), listReplays(levelId, 'completion_time')]);
         lists = { newest, fastest };
-        cachePut(`lists:${levelId}`, lists);
+        cachePut(`lists2:${levelId}`, lists);
       }
       const entry = { loader: null, newest: lists.newest, fastest: lists.fastest, runs: new Map(), errors: new Set() };
       entry.getLoader = () => (entry.loader ||= levelRecord(levelId).then(loadLevel).catch((e) => { entry.loader = null; throw e; }));
@@ -355,8 +359,13 @@ function candidates(entry, difficulty) {
   for (const r of [...entry.fastest, ...entry.newest]) byId.set(r.id, r);
   const pool = [...byId.values()];
   if (!pool.length) return [];
-  // Replays recorded in older game versions drift more often in this one: try newer ones first.
-  const oldPenalty = (r) => (r.version && r.version < 1.9 ? 0.35 : 0);
+  // A replay plays back exactly only on a computer with the same floating-point "architecture" as
+  // the one it was recorded on (the game's replay browser marks the others inaccurate). Those
+  // come first; replays from other machines or older game versions often drift off course.
+  const S = Game.Settings || {};
+  const mine = String(S.architecture || '');
+  const current = Number(S.CURRENT_VERSION) || 0;
+  const oldPenalty = (r) => (r.arch === mine ? 0 : 1.2) + (r.version >= current ? 0 : r.version >= 1.9 ? 0.3 : 0.6);
   if (difficulty === 'expert') return pool.sort((a, b) => a.steps * (1 + oldPenalty(a)) - b.steps * (1 + oldPenalty(b)));
   const sample = (entry.newest.length >= 10 ? entry.newest : pool).map((r) => r.steps).sort((a, b) => a - b);
   const at = (q) => sample[Math.min(sample.length - 1, Math.floor(q * (sample.length - 1)))];
