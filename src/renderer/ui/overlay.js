@@ -130,6 +130,7 @@ export function createOverlay(mp, bridge, tx) {
     levelTab: 'featured', featuredChar: 0,
     player: { mode: 'all', sort: 'rating', uploaded: 'anytime', page: 1, pages: 1, results: null, loading: false, error: null },
     idLookup: { loading: false, error: null },
+    mpmaps: { sort: 'rating', page: 1, pages: 1, results: null, loading: false, error: null },
     selected: null,
     resultsHidden: false,
     shortcut: null,
@@ -232,6 +233,20 @@ export function createOverlay(mp, bridge, tx) {
       if (!r.levels.length) p.error = 'No levels found';
     } catch (e) { p.error = e.message; p.results = []; }
     p.loading = false;
+    render();
+  }
+
+  // Maps made for multiplayer: their makers put HWMP in the level name (see the README).
+  const MAP_GUIDE_URL = 'https://github.com/BLUNT-Chief/happywheels-multiplayer#making-multiplayer-maps';
+  async function loadMpMaps(page = 1) {
+    const m = ui.mpmaps;
+    m.loading = true; m.error = null; m.page = page; render();
+    try {
+      const r = await bridge.playerLevels({ mode: 'name', term: 'HWMP', sort: m.sort, uploaded: 'anytime', page });
+      m.results = r.levels; m.pages = r.levels.length ? r.pages : 1;
+      if (!r.levels.length) m.error = 'No multiplayer maps yet. Make the first one!';
+    } catch (e) { m.error = e.message; m.results = []; }
+    m.loading = false;
     render();
   }
 
@@ -559,8 +574,12 @@ export function createOverlay(mp, bridge, tx) {
 
   function levelsView() {
     const tabs = h('div', { class: 'tabs' },
-      [['featured', 'Featured'], ['player', 'Player levels'], ['id', 'Level ID']].map(([id, label]) =>
-        h('button', { class: `tab ${ui.levelTab === id ? 'on' : ''}`, onClick: () => { ui.levelTab = id; render(); if (id === 'player' && !ui.player.results && !ui.player.loading) loadPlayerLevels(1); } }, label)));
+      [['featured', 'Featured'], ['player', 'Player levels'], ['mpmaps', 'Multiplayer maps'], ['id', 'Level ID']].map(([id, label]) =>
+        h('button', { class: `tab ${ui.levelTab === id ? 'on' : ''}`, onClick: () => {
+          ui.levelTab = id; render();
+          if (id === 'player' && !ui.player.results && !ui.player.loading) loadPlayerLevels(1);
+          if (id === 'mpmaps' && !ui.mpmaps.results && !ui.mpmaps.loading) loadMpMaps(1);
+        } }, label)));
     let content;
     if (ui.levelTab === 'featured') {
       loadFeatured();
@@ -609,6 +628,26 @@ export function createOverlay(mp, bridge, tx) {
               h('button', { class: 'btn ghost', disabled: p.loading || p.page <= 1, onClick: () => loadPlayerLevels(p.page - 1) }, '← Previous'),
               h('span', null, p.results ? `Page ${p.page}${p.pages > 1 ? ` of ${p.pages}` : ''} · ${p.results.length} levels` : ''),
               h('button', { class: 'btn ghost', disabled: p.loading || p.page >= p.pages, onClick: () => loadPlayerLevels(p.page + 1) }, 'Next →'))),
+          detailsPane()),
+      ];
+    } else if (ui.levelTab === 'mpmaps') {
+      const m = ui.mpmaps;
+      const list = h('div', { class: 'lvlist', key: `mpmaps-${m.page}` });
+      if (m.loading) list.append(h('div', { class: 'muted small' }, 'Loading multiplayer maps…'));
+      else if (m.error) list.append(h('div', { class: 'muted small' }, m.error));
+      else if (m.results) list.append(...m.results.map(levelRow));
+      content = [
+        h('div', { class: 'controls' },
+          h('span', { class: 'small muted', style: 'flex:1' }, 'Levels made for racing: start positions, checkpoints and more. Map makers put HWMP in the level name.'),
+          h('select', { onChange: (e) => { m.sort = e.target.value; loadMpMaps(1); } },
+            [['rating', 'Top rated'], ['plays', 'Most played'], ['newest', 'Newest']].map(([v, t]) => h('option', { value: v, selected: m.sort === v }, t))),
+          h('button', { class: 'btn ghost', title: 'How to make a multiplayer map (opens the guide in your browser)', onClick: () => tx.openExternal(MAP_GUIDE_URL) }, 'Make one')),
+        h('div', { class: 'browser' },
+          h('div', null, list,
+            h('div', { class: 'pager' },
+              h('button', { class: 'btn ghost', disabled: m.loading || m.page <= 1, onClick: () => loadMpMaps(m.page - 1) }, '← Previous'),
+              h('span', null, m.results && m.results.length ? `Page ${m.page}${m.pages > 1 ? ` of ${m.pages}` : ''}` : ''),
+              h('button', { class: 'btn ghost', disabled: m.loading || m.page >= m.pages, onClick: () => loadMpMaps(m.page + 1) }, 'Next →'))),
           detailsPane()),
       ];
     } else {
@@ -707,7 +746,7 @@ export function createOverlay(mp, bridge, tx) {
           const left = Math.max(0, Math.ceil((race.deadline - now) / 1000));
           hud.append(h('div', { class: 'hint', style: 'bottom: 34px' }, `Race ends in ${left}s`));
         }
-        hud.append(h('div', { class: 'hint' }, 'R = restart from the start line  ·  Esc = pause / skip level  ·  F2 = lobby'));
+        hud.append(h('div', { class: 'hint' }, `${bridge.checkpoint ? 'R = back to your last checkpoint' : 'R = restart from the start line'}  ·  Esc = pause / skip level  ·  F2 = lobby`));
       }
       hud.append(standings(race));
     }

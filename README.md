@@ -30,7 +30,7 @@ Open **Happy Wheels Multiplayer**. It looks like the normal game, plus a **MULTI
 **Host a race**
 1. Click **Create lobby**. Choose whether it's listed publicly, friends only (not listed) or private (Steam invite only).
 2. Click **Invite Steam friends**, or click **Copy** next to the lobby code and send it to them.
-3. Click **Choose level…**: browse **Featured** or **Player levels** (search, sort, pages), or enter a **Level ID**. Then choose whether players collide, and optionally force everyone onto the same character.
+3. Click **Choose level…**: browse **Featured**, **Player levels** (search, sort, pages) or **Multiplayer maps** (levels made for racing, see below), or enter a **Level ID**. Then choose whether players collide, and optionally force everyone onto the same character.
 4. Optional: pick a difficulty and click **Add AI racer** (see below).
 5. Click **Start race**. Everyone loads the level and waits at the start line, then the countdown runs and it's GO. The host doesn't need to click ready; the panel shows how many players are.
 
@@ -54,6 +54,25 @@ The timer and standings are at the top. When the first racer finishes, everyone 
 **Collisions**: with collisions off, other racers are see-through and never touch you or anything in your level. With collisions on, everyone passes through each other at the start line (and after a restart) and becomes solid once you've separated, so nobody gets launched at the start.
 
 **Steam's Play button.** The launcher sets up Happy Wheels in your Steam library to open Multiplayer, so pressing **Play** in Steam just works, with the Steam overlay and **Invite friends** window, and accepting an invite drops you straight into the lobby. Steam only saves this while it's closed: if Steam is closed when the mod starts it happens automatically, otherwise the launcher asks once and restarts Steam (about 20 seconds). If you already had your own launch options for Happy Wheels, it asks before replacing them. Uninstalling the mod puts Steam's Play button back to the normal game. To turn it off yourself, clear Steam → Happy Wheels → Properties → Launch Options and pick **Don't ask again** in the launcher.
+
+## Making multiplayer maps
+
+Anyone can make maps for racing with the normal Happy Wheels level editor. The mod reads a few tags from **text boxes** in your level:
+
+| Text box says | What it does |
+| --- | --- |
+| `#mp spawn` | A start position. Add several and racers are spread across them instead of all starting on the same spot. Number them to set the order: `#mp spawn 1`, `#mp spawn 2`, … The first racer gets spawn 1, the second spawn 2, and so on; with more racers than spawns, they share. |
+| `#mp checkpoint` | A checkpoint. Once a racer passes within about 3 m of it, pressing **R** respawns them there instead of at the start (the race clock keeps running). Number them (`#mp checkpoint 1`, `#mp checkpoint 2`, …) so racers can't fall back to an earlier one. |
+| `#mp collisions on` / `#mp collisions off` | Whether racers collide on this map, whatever the lobby setting is. |
+
+How to set it up:
+1. Build your level as usual, with its normal start point (single-player and AI racers use that).
+2. Add a text box for each tag. Put spawns where the rider should start (the text box's position is used as the starting point) and checkpoints right on the route.
+3. In races the tag text is blanked out, so racers never see it. To hide it in normal single-player play too, set the text box's opacity to 0.
+4. Put **HWMP** in your level's name (for example "Canyon Sprint HWMP") so it shows up under **Multiplayer maps** in the mod's level browser.
+5. Upload a replay or two of your own runs: AI racers drive real replays, so they can only race levels that have some.
+
+Good to know: pressing R restarts the level, so anything that moved (crates, doors, triggers) goes back to how it started. Place checkpoints so the route from them still works from a fresh level.
 
 ## Troubleshooting
 

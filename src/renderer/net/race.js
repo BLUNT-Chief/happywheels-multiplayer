@@ -89,6 +89,7 @@ export class Multiplayer {
     b.on('levelComplete', () => this.onLocalFinish());
     b.on('exitedToMenu', () => this.onLocalExit());
     b.on('puppetHit', (id, hit) => this.onPuppetHit(id, hit));
+    b.on('checkpoint', () => this.toast('Checkpoint! R brings you back here.'));
     setInterval(() => this.pingHost(), 500);
     // Handshake repair: keep greeting lobby members we haven't heard from (a dropped hello would
     // otherwise leave them missing from the player list).
@@ -400,6 +401,11 @@ export class Multiplayer {
     this.onCtrl(id, msg);
   }
 
+  /** Our position among the (human) racers: which #mp spawn point we get on maps that have them. */
+  humanSlot(participants) {
+    return participants.filter((id) => !isBotId(id)).indexOf(this.self.id);
+  }
+
   /** A race is loading or running (not the lobby or the results screen). */
   racing() { return ['loading', 'countdown', 'racing'].includes(this.phase); }
 
@@ -478,6 +484,7 @@ export class Multiplayer {
     this.sendHost({ t: 'joinRace', race: r.id });
     this.rejoining = true;
     this.playedLevels.add(r.level.id);
+    if (late) this.bridge.resetMapProgress(this.humanSlot(r.participants));
     const b = this.bridge;
     b.raceMode = true;
     b.setCollisions(r.collisions);
@@ -556,6 +563,8 @@ export class Multiplayer {
     this.playedLevels.add(msg.level.id);
     for (const p of this.players.values()) { p.status = msg.participants.includes(p.id) ? 'loading' : 'spectating'; p.finishMs = null; p.ready = false; }
     const me = this.players.get(this.self.id);
+    this.bridge.resetMapProgress(this.humanSlot(msg.participants));
+    this.mapNoticeShown = false;
     this.changed();
     if (this.isHost) this.bots.prepare(this.race);
     if (!msg.participants.includes(this.self.id)) return;
@@ -597,6 +606,21 @@ export class Multiplayer {
 
   onLocalSessionStart(session, serial) {
     if (!this.race || !this.self || !this.bridge.raceMode) return;
+    const tags = this.bridge.mapTags();
+    if (tags && tags.collisions != null && tags.collisions !== this.bridge.collisions) {
+      // Everyone loads the same map, so everyone applies its rule the same way.
+      this.bridge.setCollisions(tags.collisions);
+      this.race.collisions = tags.collisions;
+    }
+    if (tags && !this.mapNoticeShown) {
+      this.mapNoticeShown = true;
+      const bits = [];
+      const n = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+      if (tags.spawns.length) bits.push(n(tags.spawns.length, 'start position'));
+      if (tags.checkpoints.length) bits.push(`${n(tags.checkpoints.length, 'checkpoint')} (R takes you back to the last one)`);
+      if (tags.collisions != null) bits.push(`collisions ${tags.collisions ? 'on' : 'off'}`);
+      if (bits.length) this.toast(`Multiplayer map: ${bits.join(', ')}`);
+    }
     this.localSerial = serial;
     const info = this.bridge.localCharacterInfo();
     if (Number(info.levelId) !== Number(this.race.level.id)) return;

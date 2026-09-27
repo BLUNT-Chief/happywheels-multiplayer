@@ -4,6 +4,7 @@
 import { log } from '../log.js';
 import { on as onHook, state as hookState } from '../hooks.js';
 import { Game } from './locate.js';
+import { takeMapTags } from './mapTags.js';
 import { computeLayout, hookCharacterEvents, characterTree, bodiesOf } from './character.js';
 import { Puppet, makeContactFilter } from './puppets.js';
 
@@ -25,6 +26,8 @@ export const bridge = {
   puppetSpecs: new Map(),// peerId -> { spec, events: [] } used to rebuild after local restarts
   now: () => performance.now(),
   pendingLoad: null,
+  spawnSlot: null,       // our index among the racers, for maps with several #mp spawn points
+  checkpoint: null,      // last #mp checkpoint we touched this race (level pixels)
 
   on(evt, fn) { (listeners[evt] ||= []).push(fn); return () => { listeners[evt] = listeners[evt].filter((f) => f !== fn); }; },
 
@@ -35,6 +38,18 @@ export const bridge = {
     if (app.sessionController) return this.session ? 'session' : 'loading-level';
     if (app.mainMenu) return 'menu';
     return 'other';
+  },
+
+  /** Tags of the level we're racing on (see mapTags.js), or null. */
+  mapTags() {
+    const L = this.session && this.session.level;
+    return (L && L.__hwmpTags) || null;
+  },
+
+  /** New race: spawn slot for maps with start positions, no checkpoint yet. */
+  resetMapProgress(slot) {
+    this.spawnSlot = slot == null || slot < 0 ? null : slot;
+    this.checkpoint = null;
   },
 
   characterNames() { return (Game.Settings?.characterNames || []).slice(); },
@@ -283,6 +298,67 @@ function installContactFilter(session) {
   world.__hwmpFilter = true;
 }
 
+// ---- multiplayer map tags --------------------------------------------------------------------
+const CHECKPOINT_RADIUS = 3; // meters
+
+/** In races: start at our #mp spawn point, or at the last #mp checkpoint after pressing R. */
+function startPointFor(session) {
+  const L = session._level;
+  if (!L) return null;
+  // Read the tags the first time this level asks for its start point, before it's built.
+  if (L.__hwmpTags === undefined) L.__hwmpTags = takeMapTags(L);
+  const tags = L.__hwmpTags;
+  if (bridge.checkpoint) return bridge.checkpoint;
+  if (tags && tags.spawns.length && bridge.spawnSlot != null) return tags.spawns[bridge.spawnSlot % tags.spawns.length];
+  return null;
+}
+
+/**
+ * A restart puts the character back where it was first created; after touching a checkpoint,
+ * move it (vehicle and all) to the checkpoint instead.
+ */
+function moveToCheckpoint(session) {
+  const L = session.level;
+  const cp = bridge.checkpoint;
+  const start = L && L.__hwmpStart;
+  if (!cp || !start || !session.m_world) return;
+  const scale = L.m_physScale || session.m_physScale || 30;
+  const dx = (cp.x - start.x) / scale;
+  const dy = (cp.y - start.y) / scale;
+  if (!dx && !dy) return;
+  const to = { x: 0, y: 0 };
+  for (let b = session.m_world.m_bodyList; b; b = b.m_next) {
+    if (!b.__hwmpLocal || b.__hwmpPuppet) continue;
+    const p = b.m_xf.position;
+    to.x = p.x + dx; to.y = p.y + dy;
+    b.SetXForm(to, b.m_sweep.a);
+    b.m_linearVelocity.Set(0, 0);
+    b.m_angularVelocity = 0;
+  }
+}
+
+function trackCheckpoints(session) {
+  const L = session.level;
+  const tags = L && L.__hwmpTags;
+  if (!tags || !tags.checkpoints.length || !bridge.raceMode) return;
+  const ch = session.character;
+  if (!ch || ch.dead || !ch.cameraFocus) return;
+  const c = ch.cameraFocus.GetWorldCenter();
+  const scale = L.m_physScale || session.m_physScale || 30;
+  const cur = bridge.checkpoint;
+  for (const cp of tags.checkpoints) {
+    if (cp === cur) continue;
+    if (cur && cp.order != null && cur.order != null && cp.order < cur.order) continue; // no going back
+    const dx = c.x - cp.x / scale;
+    const dy = c.y - cp.y / scale;
+    if (dx * dx + dy * dy < CHECKPOINT_RADIUS * CHECKPOINT_RADIUS) {
+      bridge.checkpoint = cp;
+      emit('checkpoint', cp);
+      return;
+    }
+  }
+}
+
 // ---- hits on racers ----------------------------------------------------------------------------
 // With collisions on, a hard hit between the local player and a racer is reported (an AI racer
 // then tumbles and gets back up). Impulses are summed per step; resting contact stays far below.
@@ -379,6 +455,19 @@ function installGameHooks() {
     if (isRaceEligible(this)) onSessionStart(this);
     return r;
   });
+  wrap(SessionP, 'getStartPoint', (orig) => function (...a) {
+    const pt = orig.apply(this, a);
+    // Not for AI racers' hidden replay sessions (their runs start where they were recorded).
+    const replay = Game.ReplaySession && this instanceof Game.ReplaySession;
+    if (!bridge.raceMode || replay || this.isReplay || this.isMenu || this.isEditorTest) return pt;
+    try {
+      const at = startPointFor(this);
+      if (at && pt) { pt.x = at.x; pt.y = at.y; }
+      // The first call creates the character; restarts reuse it and put it back here.
+      if (pt && this._level && !this._level.__hwmpStart) this._level.__hwmpStart = { x: pt.x, y: pt.y };
+    } catch (e) { log.warn('map tags', e); }
+    return pt;
+  });
   wrap(SessionP, 'die', (orig) => function (...a) {
     if (this === bridge.session) onSessionEnd(this);
     return orig.apply(this, a);
@@ -439,6 +528,7 @@ function installGameHooks() {
     const s = bridge.session;
     if (!s || world !== s.m_world) return;
     reportHits();
+    trackCheckpoints(s);
     emit('step', s);
   });
   onHook('render', () => {
@@ -481,6 +571,9 @@ function onSessionStart(session) {
   markLocalShapes(session);
   installContactFilter(session);
   installHitDetector(session);
+  if (bridge.raceMode && bridge.checkpoint) {
+    try { moveToCheckpoint(session); } catch (e) { log.warn('checkpoint respawn', e); }
+  }
   if (!ch.__hwmpHooked) {
     ch.__hwmpHooked = true;
     hookCharacterEvents(ch, (path, method, args) => {
