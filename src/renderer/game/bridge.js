@@ -176,6 +176,15 @@ export const bridge = {
     if (p) p.pushSnapshot(t, data);
   },
 
+  /** Host AI driver: let a racer's puppet tumble under physics (free) or follow snapshots again. */
+  setPuppetFree(peerId, free, push) {
+    const p = this.puppets.get(peerId);
+    if (!p || !this.session || !this.session.m_world || this.session.m_world.m_lock) return null;
+    p.setFree(free);
+    if (free && push) p.kick(push.nx, push.ny, push.impulse);
+    return p;
+  },
+
   puppetEvent(peerId, path, method, args) {
     const entry = this.puppetSpecs.get(peerId);
     if (!entry) return;
@@ -260,6 +269,55 @@ function installContactFilter(session) {
     collisions: () => bridge.collisions,
   });
   world.__hwmpFilter = true;
+}
+
+// ---- hits on racers ----------------------------------------------------------------------------
+// With collisions on, a hard hit between the local player and a racer is reported (an AI racer
+// then tumbles and gets back up). Impulses are summed per step; resting contact stays far below.
+const HIT_IMPULSE = 18;
+const stepHits = new Map(); // puppet -> { impulse, nx, ny } this step
+
+const puppetOfShape = (sh) => sh && (sh.__hwmpPuppet || (sh.m_body && sh.m_body.__hwmpPuppet));
+const isLocalShape = (sh) => !!sh && (sh.__hwmpLocal === true || !!(sh.m_body && sh.m_body.__hwmpLocal));
+
+function installHitDetector(session) {
+  const cl = session.contactListener;
+  if (!cl || cl.__hwmpHits || typeof cl.Result !== 'function') return;
+  cl.__hwmpHits = true;
+  const orig = cl.Result;
+  cl.Result = function (pt) {
+    try {
+      if (bridge.collisions && pt && pt.normal) {
+        const p1 = puppetOfShape(pt.shape1);
+        const p2 = puppetOfShape(pt.shape2);
+        const p = p1 || p2;
+        if (p && !(p1 && p2) && isLocalShape(p1 ? pt.shape2 : pt.shape1)) {
+          // The normal points from shape1 to shape2: flip it so it points into the racer.
+          const sign = p2 ? 1 : -1;
+          const imp = Math.max(0, pt.normalImpulse || 0);
+          const acc = stepHits.get(p) || { impulse: 0, nx: 0, ny: 0 };
+          acc.impulse += imp;
+          acc.nx += pt.normal.x * sign * imp;
+          acc.ny += pt.normal.y * sign * imp;
+          stepHits.set(p, acc);
+        }
+      }
+    } catch {}
+    return orig.call(this, pt);
+  };
+}
+
+function reportHits() {
+  if (!stepHits.size) return;
+  for (const [p, h] of stepHits) {
+    if (h.impulse < HIT_IMPULSE) continue;
+    let id = null;
+    for (const [pid, q] of bridge.puppets) if (q === p) { id = pid; break; }
+    if (!id) continue;
+    const len = Math.hypot(h.nx, h.ny) || 1;
+    emit('puppetHit', id, { impulse: h.impulse, nx: h.nx / len, ny: h.ny / len });
+  }
+  stepHits.clear();
 }
 
 /** Back to the main menu from anywhere in a level: playing, paused, character select or loading. */
@@ -368,6 +426,7 @@ function installGameHooks() {
   onHook('postStep', (world) => {
     const s = bridge.session;
     if (!s || world !== s.m_world) return;
+    reportHits();
     emit('step', s);
   });
   onHook('render', () => {
@@ -408,6 +467,7 @@ function onSessionStart(session) {
   bridge.layout = computeLayout(ch);
   markLocalShapes(session);
   installContactFilter(session);
+  installHitDetector(session);
   if (!ch.__hwmpHooked) {
     ch.__hwmpHooked = true;
     hookCharacterEvents(ch, (path, method, args) => {

@@ -49,6 +49,7 @@ export class Multiplayer {
     this.broadcastTimer = null;
     this.error = null;
     this.bots = new BotDriver(this); // host: plays the AI racers
+    this.botHitAt = new Map();       // AI racer -> when we last reported hitting it
   }
 
   // ---- plumbing ------------------------------------------------------------------------------
@@ -86,6 +87,7 @@ export class Multiplayer {
     b.on('localEvent', (path, method, args) => this.onLocalEvent(path, method, args));
     b.on('levelComplete', () => this.onLocalFinish());
     b.on('exitedToMenu', () => this.onLocalExit());
+    b.on('puppetHit', (id, hit) => this.onPuppetHit(id, hit));
     setInterval(() => this.pingHost(), 500);
     // Handshake repair: keep greeting lobby members we haven't heard from (a dropped hello would
     // otherwise leave them missing from the player list).
@@ -591,6 +593,17 @@ export class Multiplayer {
     this.onCtrl(this.self.id, msg);
   }
 
+  /** We hit a racer hard (collisions on). AI racers get knocked; the host decides and shows everyone. */
+  onPuppetHit(id, hit) {
+    const p = this.players.get(id);
+    if (!p || !p.bot || !this.race || this.phase !== 'racing' || !this.bridge.raceMode) return;
+    if (this.isHost) { this.bots.knock(id, { ...hit, local: true }); return; }
+    const now = performance.now();
+    if (now - (this.botHitAt.get(id) || 0) < 500) return;
+    this.botHitAt.set(id, now);
+    this.sendHost({ t: 'botHit', race: this.race.id, target: id, impulse: Math.round(hit.impulse), nx: hit.nx, ny: hit.ny });
+  }
+
   onLocalExit() {
     if (!this.race || this.bridge.pendingLoad) return;
     if (this.phase === 'results' || this.finished) return;
@@ -792,6 +805,14 @@ export class Multiplayer {
         if (!self) this.toast(late ? `${player.name} joined the race` : `${player.name} is rejoining the race`);
         this.broadcastLobby();
         this.changed();
+        return;
+      }
+      case 'botHit': {
+        if (!this.isHost || !race || m.race !== race.id || !player || player.bot || this.phase !== 'racing') return;
+        if (!isBotId(m.target) || !this.players.get(m.target)?.bot) return;
+        if (!V.num(m.impulse) || !V.num(m.nx) || !V.num(m.ny)) return;
+        const len = Math.hypot(m.nx, m.ny) || 1;
+        this.bots.knock(m.target, { impulse: Math.min(500, Math.max(0, m.impulse)), nx: m.nx / len, ny: m.ny / len, local: false });
         return;
       }
       case 'voteSkip': {

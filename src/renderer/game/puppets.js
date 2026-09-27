@@ -59,6 +59,8 @@ class Puppet {
     // solid everywhere else.
     this.armedBodies = new Set();
     this.clearSteps = new Map(); // body -> consecutive steps away from the local player
+    // Free: physics moves this racer instead of snapshots (an AI racer tumbling after a hit).
+    this.free = false;
   }
 
   spawn() {
@@ -164,7 +166,7 @@ class Puppet {
 
   /** Moves bodies to the interpolated remote state for render time `now` (synced clock, ms). */
   apply(now) {
-    if (!this.character || this.dead) return;
+    if (!this.character || this.dead || this.free) return;
     const arr = this.snapshots;
     if (!arr.length) return;
     const rt = now - INTERP_DELAY_MS;
@@ -269,6 +271,26 @@ class Puppet {
     return x0 === Infinity ? null : { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
   }
 
+  /** Hand the racer to physics (a tumble), or back to snapshots. Refilters so it lands on the ground. */
+  setFree(on) {
+    if (this.free === !!on || !this.character) return;
+    this.free = !!on;
+    this.refilter([...this.shapes]);
+    if (on) for (const b of this.driven) b.WakeUp?.();
+  }
+
+  /** Push from a hit that happened in another player's game: the direction of the push and its strength. */
+  kick(nx, ny, strength) {
+    const speed = Math.max(3, Math.min(10, strength / 6));
+    const spin = (nx >= 0 ? 1 : -1) * Math.min(6, speed * 0.6);
+    for (const b of this.driven) {
+      if (b.destroyed) continue;
+      b.m_linearVelocity.Set(b.m_linearVelocity.x + nx * speed, b.m_linearVelocity.y + ny * speed - 2);
+      b.m_angularVelocity += spin;
+      b.WakeUp?.();
+    }
+  }
+
   /** Solid to the local player: the main body has armed (used for the ghost look). */
   get armed() {
     const ch = this.character;
@@ -319,7 +341,8 @@ export function makeContactFilter(defaultFilter, opts) {
       if (opts.isLocalShape(other)) return opts.collisions() && p.armedBodies.has(ps.m_body);
       const ob = other.m_body;
       // Free (non network-driven) puppet parts may rest on static level geometry; nothing else.
-      if (ob && ob.IsStatic() && !p.driven.has(ps.m_body)) return defaultFilter.ShouldCollide(a, b);
+      // A racer handed to physics (tumbling after a hit) lands on the ground too.
+      if (ob && ob.IsStatic() && (p.free || !p.driven.has(ps.m_body))) return defaultFilter.ShouldCollide(a, b);
       return false;
     },
   };
