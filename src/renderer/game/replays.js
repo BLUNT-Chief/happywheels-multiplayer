@@ -11,11 +11,12 @@ export const STEP_MS = 1000 / 30;     // the game steps its physics 30 times a s
 const MAX_STEPS = 30 * 60 * 4;        // skip runs longer than 4 minutes
 const COAST_STEPS = 45;               // keep recording briefly after the finish
 const CHUNK_STEPS = 60;               // physics steps per slice, so the game stays responsive
-const MAX_TRIES = 6;                  // candidate replays simulated per AI racer at most
-// The game's server rate-limits a whole connection for a long time (15+ minutes, level loading
-// included) after bursts, so AI racers stay well under it and back off completely if it pushes back.
+const MAX_TRIES = 4;                  // candidate replays simulated per AI racer at most
+// The game's server (Cloudflare) blocks a whole connection for 24 hours, level loading included,
+// after a burst (about 90 requests in 30 s did it; 45 in 10 s did not). AI racers stay far below that
+// and stop completely if the server ever pushes back.
 const REQUEST_GAP_MS = 500;
-const REQUESTS_PER_MINUTE = 20;
+const LIMITS = [[60 * 1000, 15], [10 * 60 * 1000, 40]]; // [window, max requests]
 const BUSY_COOLDOWN_MS = 10 * 60 * 1000;
 
 export const DIFFICULTIES = ['easy', 'medium', 'hard', 'expert'];
@@ -25,9 +26,9 @@ const siteURL = () => (Game.Settings && Game.Settings.siteURL) || 'https://total
 
 class ServerBusy extends Error {}
 
-const BUSY_TEXT = 'the Happy Wheels server asked us to slow down, AI racers will be back in a few minutes';
+const BUSY_TEXT = 'the Happy Wheels server is refusing requests from this connection right now';
 let requests = Promise.resolve();
-const recent = []; // start times of requests in the last minute
+const recent = []; // start times of requests in the longest window
 let busyUntil = 0;
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,18 +37,20 @@ function post(file, body, bytes = false) {
     if (performance.now() < busyUntil) throw new ServerBusy(BUSY_TEXT);
     for (;;) {
       const now = performance.now();
-      while (recent.length && now - recent[0] > 60000) recent.shift();
-      const wait = Math.max(
-        recent.length ? recent[recent.length - 1] + REQUEST_GAP_MS - now : 0,
-        recent.length >= REQUESTS_PER_MINUTE ? recent[0] + 60000 - now : 0,
-      );
+      while (recent.length && now - recent[0] > LIMITS[LIMITS.length - 1][0]) recent.shift();
+      let wait = recent.length ? recent[recent.length - 1] + REQUEST_GAP_MS - now : 0;
+      for (const [span, max] of LIMITS) {
+        const inWindow = recent.filter((t) => now - t < span);
+        if (inWindow.length >= max) wait = Math.max(wait, inWindow[inWindow.length - max] + span - now);
+      }
       if (wait <= 0) break;
       await pause(wait);
     }
     recent.push(performance.now());
     const res = await fetch(siteURL() + file, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
     if (res.status === 429) {
-      busyUntil = performance.now() + BUSY_COOLDOWN_MS;
+      const retry = Number(res.headers.get('Retry-After'));
+      busyUntil = performance.now() + (Number.isFinite(retry) && retry > 0 ? retry * 1000 : BUSY_COOLDOWN_MS);
       throw new ServerBusy(BUSY_TEXT);
     }
     if (!res.ok) throw new Error(`The replay server answered ${res.status}`);
