@@ -187,7 +187,7 @@ export const bridge = {
   setCollisions(on) {
     this.collisions = !!on;
     for (const p of this.puppets.values()) {
-      p.armed = false; p.clearSteps = 0;
+      p.resetArming();
       p.setAlpha(this.collisions ? UNARMED_ALPHA : this.ghostAlpha);
     }
   },
@@ -244,6 +244,7 @@ function markLocalShapes(session) {
     for (const k of Object.keys(c)) {
       const b = c[k];
       if (b && b.m_xf && typeof b.GetShapeList === 'function' && !b.__hwmpPuppet) {
+        b.__hwmpLocal = true;
         for (let s = b.GetShapeList(); s; s = s.m_next) s.__hwmpLocal = true;
       }
     }
@@ -255,7 +256,7 @@ function installContactFilter(session) {
   if (!world || world.__hwmpFilter) return;
   const def = world.m_contactFilter;
   world.m_contactFilter = makeContactFilter(def, {
-    isLocalShape: (s) => s.__hwmpLocal === true,
+    isLocalShape: (s) => s.__hwmpLocal === true || !!(s.m_body && s.m_body.__hwmpLocal),
     collisions: () => bridge.collisions,
   });
   world.__hwmpFilter = true;
@@ -394,11 +395,9 @@ function armCollisions(session) {
   const mine = localBounds(session);
   if (!mine) return;
   for (const p of bridge.puppets.values()) {
-    if (p.armed) continue;
-    const o = p.bounds();
-    const overlap = o && !(o.x1 < mine.x0 || o.x0 > mine.x1 || o.y1 < mine.y0 || o.y0 > mine.y1);
-    p.clearSteps = overlap ? 0 : p.clearSteps + 1;
-    if (p.clearSteps >= ARM_AFTER_STEPS) { p.armed = true; p.setAlpha(1); }
+    const was = p.armed;
+    p.updateArming(mine, ARM_AFTER_STEPS);
+    if (p.armed && !was) p.setAlpha(1);
   }
 }
 

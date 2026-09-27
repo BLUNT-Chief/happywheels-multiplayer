@@ -55,8 +55,10 @@ class Puppet {
     this.dead = false;
     // Collisions only 'arm' once this racer and the local player have been apart for a moment,
     // so everyone can share the start line (and restart) without exploding into each other.
-    this.armed = false;
-    this.clearSteps = 0;
+    // Tracked per part: a racer who left a part (say, a pogo stick) where you are still becomes
+    // solid everywhere else.
+    this.armedBodies = new Set();
+    this.clearSteps = new Map(); // body -> consecutive steps away from the local player
   }
 
   spawn() {
@@ -267,6 +269,30 @@ class Puppet {
     return x0 === Infinity ? null : { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
   }
 
+  /** Solid to the local player: the main body has armed (used for the ghost look). */
+  get armed() {
+    const ch = this.character;
+    const main = ch && ch.chestBody;
+    return main ? this.armedBodies.has(main) : this.armedBodies.size > 0;
+  }
+
+  /** One physics step of arming: parts away from the local player's box for `steps` steps arm. */
+  updateArming(box, steps, pad = 1.2) {
+    for (const b of this.bodies) {
+      if (b.destroyed || this.armedBodies.has(b)) continue;
+      const p = b.m_xf.position;
+      const near = p.x > box.x0 - pad && p.x < box.x1 + pad && p.y > box.y0 - pad && p.y < box.y1 + pad;
+      const n = near ? 0 : (this.clearSteps.get(b) || 0) + 1;
+      this.clearSteps.set(b, n);
+      if (n >= steps) this.armedBodies.add(b);
+    }
+  }
+
+  resetArming() {
+    this.armedBodies.clear();
+    this.clearSteps.clear();
+  }
+
   /** Screen-space anchor (world coords, pixels) for name tags. */
   headWorldPos() {
     const ch = this.character;
@@ -281,15 +307,16 @@ class Puppet {
 export function makeContactFilter(defaultFilter, opts) {
   return {
     ShouldCollide(a, b) {
-      const pa = a.__hwmpPuppet;
-      const pb = b.__hwmpPuppet;
+      // By shape or by body: the game can add shapes to a body after we tagged it.
+      const pa = a.__hwmpPuppet || (a.m_body && a.m_body.__hwmpPuppet);
+      const pb = b.__hwmpPuppet || (b.m_body && b.m_body.__hwmpPuppet);
       if (!pa && !pb) return defaultFilter.ShouldCollide(a, b);
       if (pa && pb) return false;
       const p = pa || pb;
       const ps = pa ? a : b;
       const other = pa ? b : a;
       if (other.IsSensor?.() || other.m_isSensor || ps.m_isSensor) return false;
-      if (opts.isLocalShape(other)) return opts.collisions() && p.armed;
+      if (opts.isLocalShape(other)) return opts.collisions() && p.armedBodies.has(ps.m_body);
       const ob = other.m_body;
       // Free (non network-driven) puppet parts may rest on static level geometry; nothing else.
       if (ob && ob.IsStatic() && !p.driven.has(ps.m_body)) return defaultFilter.ShouldCollide(a, b);
