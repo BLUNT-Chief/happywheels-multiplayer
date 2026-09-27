@@ -3,6 +3,8 @@
 
 import css from './styles.css';
 import { fmtTime } from '../net/race.js';
+import { DIFFICULTIES, DIFFICULTY_NAMES } from '../game/replays.js';
+import { MAX_BOTS } from '../net/protocol.js';
 import { log } from '../log.js';
 
 // Tiny element builder. Extra props: key (stable id used to keep focus/scroll across redraws) and
@@ -303,17 +305,52 @@ export function createOverlay(mp, bridge, tx) {
       voted ? `Voted to skip (${race.skipVotes.size}/${mp.skipVotesNeeded()})` : `Vote to skip level (${race.skipVotes.size}/${mp.skipVotesNeeded()})`)];
   }
 
+  function botRow(p) {
+    const statusText = {
+      lobby: '', loading: 'finding a run…', ready: 'at the start line', racing: 'racing',
+      finished: `finished ${fmtTime(p.finishMs)}`, dnf: 'did not finish', spectating: 'watching',
+    }[p.status] ?? p.status;
+    const editable = mp.isHost && (mp.phase === 'lobby' || mp.phase === 'results');
+    const d = p.bot.difficulty;
+    return h('div', { class: 'player bot' },
+      h('div', { class: 'avatar ai' }, 'AI'),
+      h('div', null,
+        h('div', null, p.name, h('span', { class: 'badge ai' }, 'AI')),
+        h('div', { class: 'status', title: 'AI racers drive real runs other players uploaded for this level' },
+          p.runBy ? `${charName(p.character)} · run by ${p.runBy}` : `${DIFFICULTY_NAMES[d]} difficulty`)),
+      editable
+        ? h('div', { class: 'row' },
+          h('select', { title: 'Difficulty', onChange: (e) => mp.setBotDifficulty(p.id, e.target.value) },
+            DIFFICULTIES.map((x) => h('option', { value: x, selected: x === d }, DIFFICULTY_NAMES[x]))),
+          h('button', { class: 'btn ghost small-btn', title: 'Remove this AI racer', onClick: () => mp.removeBot(p.id) }, '×'))
+        : h('div', { class: 'status' }, statusText));
+  }
+
+  /** Host: add AI racers (they race real uploaded runs of the level). */
+  function botAdder() {
+    if (!mp.isHost) return null;
+    const count = mp.botPlayers().length;
+    const idle = mp.phase === 'lobby' || mp.phase === 'results';
+    const pick = DIFFICULTIES.includes(ui.botDifficulty) ? ui.botDifficulty : (mp.prefs.botDifficulty || 'medium');
+    return h('div', { class: 'row', title: 'AI racers drive real runs other players uploaded for the level, checked to reach the finish' },
+      h('button', { class: 'btn', disabled: !idle || count >= MAX_BOTS, onClick: () => mp.addBot(pick) }, 'Add AI racer'),
+      h('select', { onChange: (e) => { ui.botDifficulty = e.target.value; } },
+        DIFFICULTIES.map((x) => h('option', { value: x, selected: x === pick }, DIFFICULTY_NAMES[x]))),
+      !idle ? h('span', { class: 'small muted' }, 'after this race') : null);
+  }
+
   function playerRow(p) {
+    if (p.bot) return botRow(p);
     const isHost = p.id === mp.hostId;
     const statusText = {
-      lobby: p.ready ? '' : 'not ready', loading: 'loading…', ready: 'at the start line', racing: 'racing',
+      lobby: p.ready || isHost ? '' : 'not ready', loading: 'loading…', ready: 'at the start line', racing: 'racing',
       finished: `finished ${fmtTime(p.finishMs)}`, dnf: 'did not finish', spectating: 'watching',
     }[p.status] ?? p.status;
     return h('div', { class: 'player' },
       avatarImg(p.id),
       h('div', null,
         h('div', null, p.name, isHost ? h('span', { class: 'badge host' }, 'HOST') : null,
-          p.status === 'lobby' && p.ready ? h('span', { class: 'badge ready' }, 'READY') : null,
+          p.status === 'lobby' && p.ready && !isHost ? h('span', { class: 'badge ready' }, 'READY') : null,
           p.id === mp.self.id ? h('span', { class: 'badge' }, 'you') : null,
           p.gameVersion && p.gameVersion !== bridge.gameVersion() ? h('span', { class: 'badge', title: 'Their Happy Wheels version differs from yours; physics may not match. Update the game in Steam.' }, `game v${p.gameVersion}`) : null),
         h('div', { class: 'status' }, charName(p.character))),
@@ -353,7 +390,8 @@ export function createOverlay(mp, bridge, tx) {
     const charLocked = (lvl && lvl.forceChar) || mp.settings.forceCharacter;
 
     const pending = mp.lobby.members.filter((id) => !mp.players.has(id));
-    const players = h('div', { class: 'list' }, [...mp.players.values()].map(playerRow), pending.map(pendingRow));
+    const everyone = [...mp.players.values()];
+    const players = h('div', { class: 'list' }, everyone.filter((p) => !p.bot).map(playerRow), pending.map(pendingRow), everyone.filter((p) => p.bot).map(playerRow));
     const sendChat = () => { mp.sendChat(ui.inputs.chat || ''); ui.inputs.chat = ''; render(); };
     const chatLog = h('div', { class: 'chat-log', key: 'chatlog' },
       mp.chat.length ? mp.chat.map((c) => h('div', null, h('span', { class: 'who' }, c.name), c.text)) : h('div', { class: 'muted small' }, 'No messages yet. Say hi!'));
@@ -386,7 +424,13 @@ export function createOverlay(mp, bridge, tx) {
       action = joinButton();
     } else if (hostMode) {
       if (inRace) action = h('button', { class: 'btn big', disabled: true }, 'Race in progress');
-      else action = h('button', { class: 'btn green big', disabled: !lvl, onClick: () => { mp.startRace(); toggle(false); } }, mp.phase === 'results' ? 'Start next race' : 'Start race');
+      else {
+        const guests = [...mp.players.values()].filter((p) => p.id !== mp.self.id && !p.bot);
+        const ready = guests.filter((p) => p.ready).length;
+        action = h('div', { class: 'stack', style: 'align-items:flex-end; gap:4px' },
+          h('button', { class: 'btn green big', disabled: !lvl, onClick: () => { mp.startRace(); toggle(false); } }, mp.phase === 'results' ? 'Start next race' : 'Start race'),
+          guests.length ? h('span', { class: 'small muted' }, `${ready} of ${guests.length} ready`) : null);
+      }
     } else if (inRace || mp.phase === 'spectating') {
       action = h('button', { class: 'btn big', disabled: true }, mp.phase === 'spectating' ? 'Race in progress — next one soon' : 'Race in progress');
     } else {
@@ -400,11 +444,12 @@ export function createOverlay(mp, bridge, tx) {
         h('div', { class: 'cols' },
           h('div', { class: 'stack' },
             h('div', { class: 'card stack' },
-              h('div', { class: 'row between' }, h('div', { class: 'label' }, `Players (${mp.lobby.members.length})`),
+              h('div', { class: 'row between' }, h('div', { class: 'label' }, `Players (${mp.lobby.members.length}${mp.botPlayers().length ? ` + ${mp.botPlayers().length} AI` : ''})`),
                 h('div', { class: 'row' },
                   h('span', { class: 'small muted' }, 'Code'), h('span', { class: 'code' }, lobbyCode(mp.lobby.id)),
                   h('button', { class: 'btn ghost', onClick: () => copy(lobbyCode(mp.lobby.id), 'Lobby code') }, 'Copy'))),
               players,
+              botAdder(),
               h('div', { class: 'row' },
                 h('button', { class: 'btn', onClick: () => { mp.invite(); toast('If the Steam invite window does not open, send your friends the lobby code instead.'); } }, 'Invite Steam friends'),
                 h('button', { class: 'btn ghost', onClick: () => act(() => mp.leave()) }, 'Leave lobby'))),

@@ -31,7 +31,8 @@ Open **Happy Wheels Multiplayer**. It looks like the normal game, plus a **MULTI
 1. Click **Create lobby**. Choose whether it's listed publicly, friends only (not listed) or private (Steam invite only).
 2. Click **Invite Steam friends**, or click **Copy** next to the lobby code and send it to them.
 3. Click **Choose level…**: browse **Featured** or **Player levels** (search, sort, pages), or enter a **Level ID**. Then choose whether players collide, and optionally force everyone onto the same character.
-4. Click **Start race**. Everyone loads the level and waits at the start line, then the countdown runs and it's GO.
+4. Optional: pick a difficulty and click **Add AI racer** (see below).
+5. Click **Start race**. Everyone loads the level and waits at the start line, then the countdown runs and it's GO. The host doesn't need to click ready; the panel shows how many players are.
 
 **Join a race**: pick a lobby from the list, or paste a lobby code and click **Join by code**. Choose your character and click **I'm ready**. Lobbies can be joined mid-race: open the panel and click **Join race in progress** to jump in (the race clock counts from everyone's GO).
 
@@ -47,6 +48,8 @@ The timer and standings are at the top. When the first racer finishes, everyone 
 **Stuck or bored of a level?** Press **Esc** to pause: the host gets **Skip to a random level** and **End race now**; everyone else gets **Vote to skip**. Once half the racers vote, the lobby moves on to a random unplayed level. The same buttons are in the F2 panel during a race.
 
 **Left a race?** Exiting to the main menu counts as a DNF, but you can get back in while it's still running: press **F2** and click **Rejoin race**. The host can also click **Back to lobby** (during a race or on the results) to send everyone back to the menu with the lobby open.
+
+**AI racers**: the host can add up to 7. They drive real runs that other players uploaded for the level, so they play like people do, crashes and all. Each run is checked before the race to make sure it still reaches the finish in this version of the game, and the player whose run it is gets credited in the lobby. Difficulty picks the kind of run: **Easy** is slower than a typical run, **Medium** is typical, **Hard** is quick, **Expert** is the fastest run that still works. AI racers can only race levels people have uploaded replays for (featured and popular levels have plenty); on a level without any, they sit the race out and say so. They run on the host's game, so they leave if the host leaves.
 
 **Collisions**: with collisions off, other racers are see-through and never touch you or anything in your level. With collisions on, everyone passes through each other at the start line (and after a restart) and becomes solid once you've separated, so nobody gets launched at the start.
 

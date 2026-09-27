@@ -54,6 +54,14 @@ export const Game = {
   /** The game's level record (decodes names, ratings, forced character like the game does). */
   get LevelData() { return findClass('LevelData', ['getAverageRating', 'dateFromString', 'forceChar']); },
   get CharacterBase() { return findClass('CharacterBase', ['trackDeath', 'checkKeyStates', 'checkReplayData', 'addKeyListeners']); },
+  // Replay playback, used to run AI racers off-screen.
+  get ReplaySession() { return findClass('ReplaySession', ['addReplayControls', 'removeReplayControls', 'update30fps']); },
+  get ReplayData() { return findClass('ReplayData', ['getKeyEntry', 'parseByteArray', 'getLength']); },
+  get ByteArray() { return findClass('ByteArray', ['readInt', 'readBytes', 'uncompress']); },
+  get Buffer() {
+    return findStatic('Buffer', (v) => typeof v === 'function' && typeof v.isBuffer === 'function' && typeof v.from === 'function' && typeof v.alloc === 'function');
+  },
+  get SoundController() { return findClass('SoundController', ['playSoundItem', 'playAreaSoundLoop', 'stopAllSounds']); },
   /** Module object that App.init decorates with featuredLevels(). */
   get FeaturedLevels() {
     return findStatic('FeaturedLevels', (v) => typeof v === 'function' && typeof v.featuredLevels === 'function' && 'levelBeaten' in v);

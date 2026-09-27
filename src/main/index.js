@@ -180,6 +180,7 @@ function main() {
         win.maximize = () => {};
         win.focus = () => {};
         win.setSkipTaskbar(true);
+        win.webContents.setAudioMuted(true); // don't make noise while someone uses the PC
       }
       win.once('show', () => setTimeout(() => {
         if (win.__hwmpLauncher || win.isDestroyed()) return;

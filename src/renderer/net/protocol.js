@@ -2,9 +2,16 @@
 //   STATE (unreliable): u8 type, u16 race, u16 serial, f64 time, u8 count, count * (f32 x, f32 y, f32 a, i16 vx, i16 vy, i16 av)
 //   PING/PONG (unreliable): clock sync
 //   CTRL (reliable): u8 type, utf8 JSON  (low-rate lobby/race control)
+//   BOTSTATE (unreliable, host only): u8 type, u8 AI racer slot, then STATE from its race field on
 // Everything received is untrusted: decoders validate sizes and types and return null on garbage.
 
-export const T = { STATE: 1, CTRL: 2, PING: 3, PONG: 4 };
+export const T = { STATE: 1, CTRL: 2, PING: 3, PONG: 4, BOTSTATE: 5 };
+
+// AI racers (hosted by the lobby host) use short ids that can't collide with Steam ids.
+export const MAX_BOTS = 7;
+export const botId = (slot) => String(101 + slot);
+export const botSlot = (id) => (/^1\d\d$/.test(id) ? Number(id) - 101 : -1);
+export const isBotId = (id) => typeof id === 'string' && botSlot(id) >= 0 && botSlot(id) < MAX_BOTS;
 export const MAX_CTRL_BYTES = 16 * 1024;
 const VEL_SCALE = 50; // i16 velocities, +-655 units/s at 0.02 resolution
 const BODY_BYTES = 18;
@@ -35,6 +42,22 @@ export function encodeState(race, serial, time, samples, count) {
     o += BODY_BYTES;
   }
   return new Uint8Array(buf);
+}
+
+export function encodeBotState(slot, race, serial, time, samples, count) {
+  const st = encodeState(race, serial, time, samples, count);
+  const out = new Uint8Array(st.length + 1);
+  out[0] = T.BOTSTATE;
+  out[1] = slot;
+  out.set(st.subarray(1), 2);
+  return out;
+}
+
+/** { slot, state } for a BOTSTATE packet (the STATE layout starts at byte 1). */
+export function decodeBotState(u8) {
+  if (u8.byteLength < 2) return null;
+  const state = decodeState(u8.subarray(1));
+  return state ? { slot: u8[1], state } : null;
 }
 
 export function decodeState(u8) {

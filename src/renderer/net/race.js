@@ -2,7 +2,9 @@
 // control (load, start, results). Body state is streamed peer-to-peer by every player.
 
 import { log } from '../log.js';
-import { T, encodeState, decodeState, encodeCtrl, decodeCtrl, encodePing, decodePing, V, cleanText } from './protocol.js';
+import { T, encodeState, decodeState, encodeCtrl, decodeCtrl, encodePing, decodePing, V, cleanText, botId, isBotId, decodeBotState, MAX_BOTS } from './protocol.js';
+import { BotDriver } from './bots.js';
+import { DIFFICULTIES, DIFFICULTY_NAMES } from '../game/replays.js';
 import { Clock } from './clock.js';
 import { sampleBodies, MAX_BODIES } from '../game/character.js';
 
@@ -46,6 +48,7 @@ export class Multiplayer {
     this.graceTimer = null;
     this.broadcastTimer = null;
     this.error = null;
+    this.bots = new BotDriver(this); // host: plays the AI racers
   }
 
   // ---- plumbing ------------------------------------------------------------------------------
@@ -165,6 +168,7 @@ export class Multiplayer {
       }
     }
     if (prevOwner !== info.owner) {
+      for (const p of this.botPlayers()) { this.players.delete(p.id); this.bridge.removePuppet(p.id); this.peerSerial.delete(p.id); }
       this.clock.reset(this.isHost);
       if (this.isHost) {
         this.toast('You are now the host');
@@ -196,7 +200,7 @@ export class Multiplayer {
         phase: this.phase,
         settings: this.settings,
         race: this.race ? { id: this.race.id, level: this.race.level, participants: this.race.participants, goAt: this.race.goAt, finishes: this.race.finishes, dnf: [...this.race.dnf], deadline: this.race.deadline, collisions: this.race.collisions, forceCharacter: this.race.forceCharacter, skipVotes: [...this.race.skipVotes] } : null,
-        players: [...this.players.values()].map((p) => ({ id: p.id, ready: p.ready, status: p.status, character: p.character })),
+        players: [...this.players.values()].map((p) => ({ id: p.id, ready: p.ready, status: p.status, character: p.character, ...(p.bot ? { bot: p.bot.difficulty, name: p.name, runBy: p.runBy || '' } : {}) })),
       };
       this.sendAll(snap);
       this.tx.lobby.setData(this.lobbySummary()).catch(() => {});
@@ -283,7 +287,7 @@ export class Multiplayer {
 
   skipVotesNeeded() {
     if (!this.race) return 0;
-    const alive = this.race.participants.filter((id) => this.players.has(id));
+    const alive = this.race.participants.filter((id) => this.players.has(id) && !this.players.get(id).bot);
     return Math.max(1, Math.ceil(alive.length / 2));
   }
 
@@ -327,6 +331,68 @@ export class Multiplayer {
     const msg = { t: 'results', race: this.race.id, finishes: this.race.finishes, dnf: [...this.race.dnf] };
     this.sendAll(msg);
     this.onCtrl(this.self.id, msg);
+  }
+
+  // ---- AI racers (host) -----------------------------------------------------------------------
+  botPlayers() { return [...this.players.values()].filter((p) => p.bot); }
+
+  addBot(difficulty = 'medium') {
+    if (!this.isHost || !DIFFICULTIES.includes(difficulty)) return;
+    if (this.phase !== 'lobby' && this.phase !== 'results') return;
+    let slot = 0;
+    while (slot < MAX_BOTS && this.players.has(botId(slot))) slot++;
+    if (slot >= MAX_BOTS) return;
+    const id = botId(slot);
+    const p = this.newPlayer(id, `AI ${slot + 1} · ${DIFFICULTY_NAMES[difficulty]}`);
+    p.bot = { difficulty };
+    p.ready = true;
+    p.runBy = '';
+    this.players.set(id, p);
+    this.prefs.botDifficulty = difficulty; savePrefs(this.prefs);
+    this.broadcastLobby();
+    this.changed();
+  }
+
+  setBotDifficulty(id, difficulty) {
+    const p = this.players.get(id);
+    if (!this.isHost || !p || !p.bot || !DIFFICULTIES.includes(difficulty)) return;
+    p.bot = { difficulty };
+    p.name = `AI ${Number(id) - 100} · ${DIFFICULTY_NAMES[difficulty]}`;
+    p.runBy = '';
+    this.broadcastLobby();
+    this.changed();
+  }
+
+  removeBot(id) {
+    const p = this.players.get(id);
+    if (!this.isHost || !p || !p.bot) return;
+    this.players.delete(id);
+    this.bridge.removePuppet(id);
+    this.peerSerial.delete(id);
+    this.broadcastLobby();
+    this.changed();
+  }
+
+  /** Host: send a message on an AI racer's behalf (everyone treats it as coming from the racer). */
+  botCtrl(id, msg) {
+    this.sendAll({ ...msg, bot: id });
+    this.onCtrl(id, msg);
+  }
+
+  botReady(id, run) {
+    const p = this.players.get(id);
+    if (!p || !this.race) return;
+    p.character = run.character;
+    p.runBy = run.author;
+    this.botCtrl(id, this.bots.spawnMsg(id));
+    this.broadcastLobby();
+  }
+
+  botFailed(id, reason = '') {
+    const p = this.players.get(id);
+    if (!p || !this.race) return;
+    this.toast(reason ? `${p.name} sits this race out: ${reason}` : `${p.name} has no working run for this level and sits this race out`);
+    this.botCtrl(id, { t: 'dnf', race: this.race.id });
   }
 
   // ---- player actions --------------------------------------------------------------------------
@@ -422,6 +488,7 @@ export class Multiplayer {
 
   // ---- race flow (all clients) -----------------------------------------------------------------
   resetRace(clearPuppets) {
+    this.bots.stop();
     clearTimeout(this.goTimer); clearTimeout(this.readyTimer); clearTimeout(this.graceTimer);
     this.race = null;
     this.finished = false;
@@ -445,6 +512,7 @@ export class Multiplayer {
     for (const p of this.players.values()) { p.status = msg.participants.includes(p.id) ? 'loading' : 'spectating'; p.finishMs = null; p.ready = false; }
     const me = this.players.get(this.self.id);
     this.changed();
+    if (this.isHost) this.bots.prepare(this.race);
     if (!msg.participants.includes(this.self.id)) return;
     const b = this.bridge;
     b.raceMode = true;
@@ -548,6 +616,15 @@ export class Multiplayer {
         this.bridge.puppetState(from, st.time, st.data);
         return;
       }
+      case T.BOTSTATE: {
+        if (from !== this.hostId || this.isHost) return;
+        const b = decodeBotState(bytes);
+        if (!b || !this.race || b.state.race !== this.race.id) return;
+        const id = botId(b.slot);
+        if (!this.players.get(id)?.bot || this.peerSerial.get(id) !== b.state.serial) return;
+        this.bridge.puppetState(id, b.state.time, b.state.data);
+        return;
+      }
       case T.PING: {
         const p = decodePing(bytes);
         if (p && this.isHost) this.send([from], encodePing(T.PONG, p.id, p.t0, this.clock.now()), false);
@@ -578,6 +655,10 @@ export class Multiplayer {
   }
 
   onCtrl(from, m) {
+    if (m.bot !== undefined) {
+      if (from !== this.hostId || !isBotId(m.bot) || !this.players.get(m.bot)?.bot) return;
+      from = m.bot;
+    }
     const fromHost = from === this.hostId;
     const self = from === this.self.id;
     const player = this.players.get(from);
@@ -638,6 +719,7 @@ export class Multiplayer {
           this.peerSerial.set(from, m.serial);
           this.bridge.setPuppet(from, { characterIndex: m.character, hideVehicle: !!m.hideVehicle, layout: m.layout });
           if (m.rejoin && this.localSpawn && this.localSpawn.race === race.id && this.bridge.session) this.sendTo(from, this.localSpawn);
+          if (m.rejoin && this.isHost && !this.players.get(from)?.bot) this.bots.resendTo(from);
         }
         if (player.status === 'loading' || player.status === 'spectating') player.status = this.phase === 'racing' ? 'racing' : 'ready';
         if (this.isHost) { this.checkRaceProgress(); this.broadcastLobby(); }
@@ -753,6 +835,19 @@ export class Multiplayer {
       };
     }
     if (Array.isArray(m.players)) {
+      // AI racers exist only in the host's snapshot.
+      const bots = new Set();
+      for (const sp of m.players.slice(0, 32)) {
+        if (!sp || !isBotId(sp.id) || !DIFFICULTIES.includes(sp.bot)) continue;
+        bots.add(sp.id);
+        let b = this.players.get(sp.id);
+        if (!b) { b = this.newPlayer(sp.id, 'AI'); this.players.set(sp.id, b); }
+        b.bot = { difficulty: sp.bot };
+        b.name = cleanText(sp.name, 32) || 'AI';
+        b.runBy = cleanText(sp.runBy, 32);
+        b.ready = true;
+      }
+      for (const p of this.botPlayers()) if (!bots.has(p.id)) { this.players.delete(p.id); this.bridge.removePuppet(p.id); }
       for (const sp of m.players.slice(0, 32)) {
         const p = sp && V.id(sp.id) ? this.players.get(sp.id) : null;
         if (!p) continue;

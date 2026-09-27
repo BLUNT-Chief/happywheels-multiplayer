@@ -5,6 +5,7 @@ import { initBridge, bridge } from './game/bridge.js';
 import { Game } from './game/locate.js';
 import { Multiplayer } from './net/race.js';
 import { createOverlay } from './ui/overlay.js';
+import * as replays from './game/replays.js';
 
 const tx = window.hwmp;
 
@@ -35,7 +36,7 @@ async function boot() {
   const overlay = createOverlay(mp, bridge, tx);
   overlay.setRendererGetter(() => state.renderer);
   await mp.start();
-  if (__DEV__ && tx?.dev) window.__hwmp = { libs, state, on, bridge, mp, Game, overlay };
+  if (__DEV__ && tx?.dev) window.__hwmp = { libs, state, on, bridge, mp, Game, overlay, replays };
   log.info('ready');
 }
 
