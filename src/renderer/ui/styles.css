@@ -131,4 +131,10 @@ select option { background: #1a1f29; }
 .toast { background: rgba(10,12,18,.88); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; font-size: 13px; animation: fade 4s forwards; }
 .toast.error { border-color: rgba(255,120,120,.6); }
 @keyframes fade { 0%, 85% { opacity: 1; } 100% { opacity: 0; } }
+.race-menu { position: absolute; left: 50%; top: 58px; transform: translateX(-50%); pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; display: flex; gap: 10px; align-items: center; box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+.race-menu .t { font-family: var(--display); color: var(--pink); font-size: 15px; }
+.tip { position: absolute; right: 12px; top: 92px; pointer-events: auto; cursor: pointer; max-width: 250px; background: var(--pink); color: #fff; border-radius: 10px; padding: 9px 12px; font-size: 13px; line-height: 1.35; box-shadow: 0 8px 24px rgba(0,0,0,.35); animation: bob 1.6s ease-in-out infinite; }
+.tip::before { content: ''; position: absolute; top: -7px; right: 38px; border: 7px solid transparent; border-top: 0; border-bottom-color: var(--pink); }
+.tip b { font-family: var(--display); font-weight: normal; }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(4px); } }
 .update { position: absolute; right: 16px; bottom: 64px; pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; display: flex; gap: 10px; align-items: center; font-size: 13px; }

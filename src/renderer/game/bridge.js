@@ -41,11 +41,18 @@ export const bridge = {
 
   gameVersion() { return String(Game.Settings?.CURRENT_VERSION_STRING || ''); },
 
-  async featuredLevels() {
-    const F = Game.FeaturedLevels;
-    if (!F) return [];
-    const list = (await F.featuredLevels()) || [];
-    return list.map((l) => ({ id: Number(l.id), name: String(l.name || ''), author: String(l.author_name || ''), character: Number(l.character) || 0, forceChar: !!l.forceChar }));
+  /** Featured levels from the game's own list (fetched once per launch). */
+  featuredLevels() {
+    if (!this.featuredPromise) {
+      const F = Game.FeaturedLevels;
+      if (!F) return Promise.resolve([]);
+      this.featuredPromise = Promise.resolve(F.featuredLevels()).then((list) => {
+        if (!list || !list.length) throw new Error('The featured level list is unavailable (offline?)');
+        return list.map((l) => ({ id: Number(l.id), name: String(l.name || ''), author: String(l.author_name || ''), character: Number(l.character) || 0, forceChar: !!l.forceChar }));
+      });
+      this.featuredPromise.catch(() => { this.featuredPromise = null; }); // retry next time
+    }
+    return this.featuredPromise;
   },
 
   /** Leaves whatever the player is doing and loads `levelId`; resolves once the session starts. */

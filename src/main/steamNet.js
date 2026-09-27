@@ -79,10 +79,14 @@ class SteamNet {
     const self = this.self()?.steamId;
     next.delete(self);
     this.members = next;
+    // Polled every 2s: only tell the page when something changed (a re-render resets its UI state).
+    const sig = JSON.stringify(info);
+    if (sig === this.lastInfoSig) return;
+    this.lastInfoSig = sig;
     this.emit('hwmp:lobby:update', info);
   }
 
-  pushLobby() { if (this.lobby) this.emit('hwmp:lobby:update', this.lobbyInfo()); }
+  pushLobby() { this.refreshMembers(); }
 
   async create({ type = 'friends', maxMembers = 8, data = {} }) {
     this.leave(true);
@@ -119,6 +123,7 @@ class SteamNet {
     try { this.lobby.leave(); } catch {}
     this.lobby = null;
     this.members = new Set();
+    this.lastInfoSig = null;
     if (!silent) this.emit('hwmp:lobby:update', null);
   }
 

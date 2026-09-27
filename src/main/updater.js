@@ -1,18 +1,21 @@
 'use strict';
 // Auto-update via electron-updater (GitHub Releases, configured in package.json "build.publish").
-// Updates download in the background; players get a "Restart now" prompt in-game and the update
-// is otherwise applied automatically the next time they quit.
+// At launch the launcher window checks first and installs a new version before the game starts,
+// so friends stay on the same version. While playing, updates download in the background and the
+// game offers "Restart now" (or installs on quit).
 
 const { ipcMain, BrowserWindow } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
-function initUpdater({ isTrustedSender, log = console }) {
+function createUpdater({ isTrustedSender, log = console }) {
   let status = { state: 'idle' };
+  const listeners = new Set();
   const set = (s) => {
     status = s;
-    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('hwmp:update:status', status);
+    for (const fn of listeners) { try { fn(status); } catch {} }
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && !w.__hwmpLauncher) w.webContents.send('hwmp:update:status', status);
   };
 
   autoUpdater.logger = log;
@@ -25,7 +28,7 @@ function initUpdater({ isTrustedSender, log = console }) {
   autoUpdater.on('update-available', (info) => set({ state: 'downloading', version: info.version, percent: 0 }));
   autoUpdater.on('download-progress', (p) => set({ ...status, state: 'downloading', percent: Math.round(p.percent || 0) }));
   autoUpdater.on('update-downloaded', (info) => set({ state: 'ready', version: info.version }));
-  autoUpdater.on('error', (err) => { log.warn?.('[hwmp] update error', err && err.message); set({ state: 'error', message: String(err && err.message || err) }); });
+  autoUpdater.on('error', (err) => { log.warn('[hwmp] update error', err && err.message); set({ state: 'error', message: String(err && err.message || err) }); });
 
   ipcMain.handle('hwmp:update:status', (e) => (isTrustedSender(e) ? status : null));
   ipcMain.on('hwmp:update:install', (e) => {
@@ -33,8 +36,35 @@ function initUpdater({ isTrustedSender, log = console }) {
   });
 
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
-  setTimeout(check, 5000);
-  setInterval(check, CHECK_INTERVAL_MS).unref();
+
+  return {
+    get status() { return status; },
+
+    /**
+     * Resolves 'ready' when an update has been downloaded, or 'none' when there is nothing to
+     * install right now (up to date, offline, check timed out, or `skip` resolved first).
+     */
+    checkBeforeLaunch({ onStatus, skip, checkTimeoutMs = 10000 }) {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = (r) => { if (done) return; done = true; listeners.delete(onChange); clearTimeout(timer); resolve(r); };
+        const onChange = (s) => {
+          onStatus(s);
+          if (s.state === 'ready') finish('ready');
+          else if (s.state === 'current' || s.state === 'error') finish('none');
+          else if (s.state === 'downloading') clearTimeout(timer); // a download is worth waiting for
+        };
+        listeners.add(onChange);
+        const timer = setTimeout(() => finish('none'), checkTimeoutMs);
+        if (skip) skip.then(() => finish('none'));
+        check();
+      });
+    },
+
+    installNow() { autoUpdater.quitAndInstall(true, true); },
+
+    startBackground() { setInterval(check, CHECK_INTERVAL_MS).unref(); },
+  };
 }
 
-module.exports = { initUpdater };
+module.exports = { createUpdater };

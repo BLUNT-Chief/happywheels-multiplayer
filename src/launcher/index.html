@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data:">
+<title>Happy Wheels Multiplayer</title>
+<style>
+  :root {
+    --bg: #141922; --panel: #1b2230; --line: rgba(255,255,255,.1); --ink: #f4f6fb; --muted: #97a3b6;
+    --blue: #3f8fd6; --blue-dark: #2a6aa6; --pink: #f2708a; --green: #5cc26d; --amber: #f2b84b; --red: #ff7a7a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.4 'Segoe UI', system-ui, sans-serif; overflow: hidden; user-select: none; }
+  .frame { height: 100%; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 14px; padding: 18px 20px 14px; -webkit-app-region: drag; background: linear-gradient(180deg, #1f2838, var(--bg)); }
+  header svg { width: 52px; height: 52px; flex: none; }
+  header h1 { margin: 0; font: 700 21px/1.1 Georgia, 'Times New Roman', serif; color: var(--pink); letter-spacing: .3px; }
+  header .ver { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  header .grow { flex: 1; }
+  .winbtn { -webkit-app-region: no-drag; background: none; border: 0; color: var(--muted); width: 32px; height: 28px; border-radius: 6px; font-size: 16px; cursor: pointer; }
+  .winbtn:hover { background: rgba(255,255,255,.08); color: #fff; }
+  main { flex: 1; padding: 6px 22px 0; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; color: var(--muted); }
+  li .ico { width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; border: 2px solid rgba(255,255,255,.18); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+  li.active { color: var(--ink); }
+  li.active .ico { border-color: var(--blue); border-top-color: transparent; animation: spin .8s linear infinite; }
+  li.done { color: var(--ink); }
+  li.done .ico { border: 0; background: var(--green); color: #0d1a10; }
+  li.done .ico::after { content: '✓'; }
+  li.warn .ico { border: 0; background: var(--amber); color: #2a1d00; }
+  li.warn .ico::after { content: '!'; }
+  li.error .ico { border: 0; background: var(--red); color: #2a0000; }
+  li.error .ico::after { content: '×'; }
+  li .detail { display: block; font-size: 12px; color: var(--muted); margin-top: 1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .bar { height: 8px; background: rgba(255,255,255,.08); border-radius: 99px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--blue), var(--pink)); transition: width .25s; }
+  .msg { border-radius: 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); }
+  .msg.error { border-color: rgba(255,122,122,.5); }
+  .msg.warn { border-color: rgba(242,184,75,.5); }
+  .msg h2 { margin: 0 0 4px; font-size: 15px; }
+  .msg p { margin: 0; color: #c9d2e0; font-size: 13px; white-space: pre-line; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button.act { border: 0; border-radius: 8px; padding: 8px 14px; font: 600 13px 'Segoe UI', system-ui, sans-serif; cursor: pointer; color: #fff; background: rgba(255,255,255,.1); }
+  button.act:hover { filter: brightness(1.15); }
+  button.act.primary { background: var(--blue); box-shadow: 0 2px 0 var(--blue-dark); }
+  footer { padding: 12px 22px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); margin-top: 12px; }
+  footer b { color: var(--ink); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <header>
+    <svg viewBox="0 0 512 512" aria-hidden="true">
+      <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4fa3ea"/><stop offset="1" stop-color="#2560a0"/></linearGradient></defs>
+      <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#bg)"/>
+      <g stroke="#f2708a" stroke-width="26" stroke-linecap="round"><line x1="58" y1="210" x2="150" y2="210"/><line x1="40" y1="276" x2="138" y2="276"/><line x1="58" y1="342" x2="150" y2="342"/></g>
+      <g transform="translate(300 276)">
+        <circle r="150" fill="none" stroke="#1b2433" stroke-width="44"/><circle r="150" fill="none" stroke="#fff" stroke-width="22"/>
+        <g stroke="#fff" stroke-width="14" stroke-linecap="round"><line x1="0" y1="-128" x2="0" y2="128"/><line x1="-128" y1="0" x2="128" y2="0"/><line x1="-90" y1="-90" x2="90" y2="90"/><line x1="-90" y1="90" x2="90" y2="-90"/></g>
+        <circle r="36" fill="#f2708a" stroke="#fff" stroke-width="12"/>
+      </g>
+    </svg>
+    <div>
+      <h1>Happy Wheels Multiplayer</h1>
+      <div class="ver" id="ver"></div>
+    </div>
+    <div class="grow"></div>
+    <button class="winbtn" id="min" title="Minimize">&#8211;</button>
+    <button class="winbtn" id="close" title="Close">&#10005;</button>
+  </header>
+  <main>
+    <ol id="steps"></ol>
+    <div id="progress" hidden>
+      <div class="bar"><div id="fill"></div></div>
+    </div>
+    <div class="msg" id="msg" hidden>
+      <h2 id="msgTitle"></h2>
+      <p id="msgText"></p>
+      <div class="actions" id="msgActions"></div>
+    </div>
+  </main>
+  <footer>In the game, click <b>MULTIPLAYER</b> in the top-right corner (or press <b>F2</b>) to race your friends.</footer>
+</div>
+<script src="launcher.js"></script>
+</body>
+</html>

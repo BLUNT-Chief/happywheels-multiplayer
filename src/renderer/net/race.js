@@ -30,6 +30,7 @@ export class Multiplayer {
     this.race = null;          // { id, level, participants, goAt, finishes: {id: ms}, dnf: Set, deadline, forceCharacter, collisions }
     this.raceCounter = 0;
     this.chat = [];
+    this.playedLevels = new Set(); // level ids raced in this lobby, for 'random unplayed level'
     this.pingId = 0;
     this.pendingPings = new Map();
     this.peerSerial = new Map(); // peer -> session serial of their current puppet
@@ -46,7 +47,10 @@ export class Multiplayer {
   // ---- plumbing ------------------------------------------------------------------------------
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   changed() { for (const fn of this.listeners) { try { fn(this); } catch (e) { log.error(e); } } }
-  toast(text, kind = 'info') { for (const fn of this.listeners) { try { fn(this, { toast: text, kind }); } catch {} } }
+  toast(text, kind = 'info') {
+    (kind === 'error' ? log.warn : log.info)('toast:', text);
+    for (const fn of this.listeners) { try { fn(this, { toast: text, kind }); } catch {} }
+  }
 
   get isHost() { return !!(this.lobby && this.self && this.lobby.owner === this.self.id); }
   get hostId() { return this.lobby ? this.lobby.owner : null; }
@@ -110,6 +114,7 @@ export class Multiplayer {
     this.lobby = info;
     this.phase = 'lobby';
     this.chat = [];
+    this.playedLevels.clear();
     this.players.clear();
     const me = this.newPlayer(this.self.id, this.self.name);
     me.character = this.prefs.character;
@@ -130,6 +135,7 @@ export class Multiplayer {
   onLobbyUpdate(info) {
     if (!info) { if (this.lobby) { this.lobby = null; this.resetRace(true); this.phase = 'idle'; this.players.clear(); this.changed(); } return; }
     if (!this.lobby || info.id !== this.lobby.id) return;
+    if (JSON.stringify(info) === JSON.stringify(this.lobby)) return;
     const prevOwner = this.lobby.owner;
     const prevMembers = new Set(this.lobby.members);
     this.lobby = info;
@@ -177,7 +183,7 @@ export class Multiplayer {
         t: 'lobby',
         phase: this.phase,
         settings: this.settings,
-        race: this.race ? { id: this.race.id, level: this.race.level, participants: this.race.participants, goAt: this.race.goAt, finishes: this.race.finishes, dnf: [...this.race.dnf], deadline: this.race.deadline, collisions: this.race.collisions, forceCharacter: this.race.forceCharacter } : null,
+        race: this.race ? { id: this.race.id, level: this.race.level, participants: this.race.participants, goAt: this.race.goAt, finishes: this.race.finishes, dnf: [...this.race.dnf], deadline: this.race.deadline, collisions: this.race.collisions, forceCharacter: this.race.forceCharacter, skipVotes: [...this.race.skipVotes] } : null,
         players: [...this.players.values()].map((p) => ({ id: p.id, ready: p.ready, status: p.status, character: p.character })),
       };
       this.sendAll(snap);
@@ -202,9 +208,12 @@ export class Multiplayer {
   setGrace(sec) { if (!this.isHost) return; this.settings.graceSec = V.int(sec, 10, 600) ? sec : 45; this.prefs.graceSec = this.settings.graceSec; savePrefs(this.prefs); this.broadcastLobby(); this.changed(); }
   setLobbyType(type) { this.prefs.lobbyType = type; savePrefs(this.prefs); }
 
-  startRace() {
+  /** force: replace a race in progress (skip level). */
+  startRace({ force = false } = {}) {
     if (!this.isHost || !this.settings.level) return;
-    if (this.phase !== 'lobby' && this.phase !== 'results') return;
+    const idle = this.phase === 'lobby' || this.phase === 'results';
+    const racing = this.phase === 'loading' || this.phase === 'countdown' || this.phase === 'racing';
+    if (!idle && !(force && racing)) return;
     const participants = [...this.players.keys()];
     this.raceCounter = ((this.race?.id || this.raceCounter) % 60000) + 1;
     const msg = {
@@ -218,6 +227,52 @@ export class Multiplayer {
     this.sendAll(msg);
     this.onCtrl(this.self.id, msg);
     this.scheduleReadyTimeout();
+  }
+
+  /**
+   * Host: pick a featured level nobody in this lobby has raced yet (starting over once all have
+   * been played) and optionally start it straight away.
+   */
+  async randomLevel({ start = false, force = false } = {}) {
+    if (!this.isHost) return null;
+    const all = await this.bridge.featuredLevels();
+    const current = this.settings.level && this.settings.level.id;
+    let pool = all.filter((l) => !this.playedLevels.has(l.id) && l.id !== current);
+    if (!pool.length) {
+      this.playedLevels.clear();
+      pool = all.filter((l) => l.id !== current);
+    }
+    if (!pool.length) return null;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    this.setLevel(pick);
+    if (start) this.startRace({ force });
+    return pick;
+  }
+
+  /** Host: abandon the current level and race a random unplayed one. */
+  skipLevel() {
+    if (!this.isHost || !this.race) return Promise.resolve(null);
+    return this.randomLevel({ start: true, force: true }).then((pick) => {
+      if (pick) this.sendAll({ t: 'notice', text: `Skipping to ${pick.name}` });
+      return pick;
+    });
+  }
+
+  /** Host: finish the race now with the times recorded so far. */
+  endRaceNow() { if (this.isHost && this.race && this.phase !== 'results') this.hostResults(); }
+
+  /** Everyone else: vote to skip; the host skips once half the racers agree. */
+  voteSkip() {
+    if (!this.race || this.isHost || this.phase === 'results') return;
+    this.sendHost({ t: 'voteSkip', race: this.race.id });
+    this.race.skipVotes.add(this.self.id);
+    this.changed();
+  }
+
+  skipVotesNeeded() {
+    if (!this.race) return 0;
+    const alive = this.race.participants.filter((id) => this.players.has(id));
+    return Math.max(1, Math.ceil(alive.length / 2));
   }
 
   backToLobby() {
@@ -310,8 +365,10 @@ export class Multiplayer {
     this.race = {
       id: msg.race, level: msg.level, participants: msg.participants, goAt: null,
       finishes: {}, dnf: new Set(), deadline: null, collisions: !!msg.collisions, forceCharacter: msg.forceCharacter | 0,
+      skipVotes: new Set(),
     };
     this.phase = 'loading';
+    this.playedLevels.add(msg.level.id);
     for (const p of this.players.values()) { p.status = msg.participants.includes(p.id) ? 'loading' : 'spectating'; p.finishMs = null; p.ready = false; }
     const me = this.players.get(this.self.id);
     this.changed();
@@ -395,6 +452,7 @@ export class Multiplayer {
     if (!this.race || this.bridge.pendingLoad) return;
     if (this.phase === 'results' || this.finished) return;
     if (!this.race.participants.includes(this.self.id) || this.race.dnf.has(this.self.id)) return;
+    log.info('left the race (returned to the main menu)', new Error('exit trace').stack.split('\n').slice(1, 6).join(' | '));
     const msg = { t: 'dnf', race: this.race.id };
     this.sendAll(msg);
     this.onCtrl(this.self.id, msg);
@@ -556,6 +614,20 @@ export class Multiplayer {
         this.changed();
         return;
       }
+      case 'voteSkip': {
+        if (!this.isHost || !race || m.race !== race.id || !player || this.phase === 'results') return;
+        race.skipVotes.add(from);
+        this.toast(`${player.name} wants to skip this level (${race.skipVotes.size}/${this.skipVotesNeeded()})`);
+        this.broadcastLobby();
+        this.changed();
+        if (race.skipVotes.size >= this.skipVotesNeeded()) this.skipLevel().catch((e) => this.toast(e.message, 'error'));
+        return;
+      }
+      case 'notice': {
+        if (!fromHost || !V.str(m.text, 200)) return;
+        this.toast(cleanText(m.text, 120));
+        return;
+      }
       case 'backToLobby': {
         if (!fromHost && !self) return;
         this.resetRace(true);
@@ -598,6 +670,7 @@ export class Multiplayer {
       }
       if (Array.isArray(m.race.dnf)) for (const id of m.race.dnf) if (V.id(id)) this.race.dnf.add(id);
       if (V.num(m.race.deadline)) this.race.deadline = m.race.deadline;
+      if (Array.isArray(m.race.skipVotes)) this.race.skipVotes = new Set(m.race.skipVotes.filter(V.id).slice(0, 32));
     } else if (!this.race && phases.includes(m.phase) && m.phase !== 'lobby') {
       this.phase = m.phase === 'results' ? 'lobby' : 'spectating';
     }

@@ -16,7 +16,10 @@ Race your friends in Happy Wheels. Everyone joins a lobby, the host picks a leve
 1. Install **Happy Wheels** from Steam and make sure Steam is running and you're logged in.
 2. Download `HappyWheelsMultiplayer-Setup-x.y.z.exe` from the [Releases page](https://github.com/BLUNT-Chief/happywheels-multiplayer/releases/latest) and run it.
    - Windows may show "Windows protected your PC", because the installer isn't code-signed yet. Click **More info → Run anyway**.
-3. The mod starts right after installing. Later, open it from the **Happy Wheels Multiplayer** shortcut on your desktop or in the Start menu.
+3. Follow the setup wizard and leave **Launch Happy Wheels Multiplayer** ticked at the end.
+4. From now on, start the game from the **Happy Wheels Multiplayer** shortcut (desktop or Start menu), **not** the normal Happy Wheels shortcut. The normal one starts the regular game, which has no multiplayer menu.
+
+When it starts, a small launcher window checks for updates, finds your Happy Wheels install and checks Steam, then opens the game. If something is wrong (Steam closed, game not installed, the regular Happy Wheels already open) it tells you and offers a button to fix it.
 
 It installs just for your Windows user (no admin rights needed), keeps its own save profile, and never modifies the Happy Wheels install.
 
@@ -39,7 +42,11 @@ Open **Happy Wheels Multiplayer**. It looks like the normal game, plus a **MULTI
 | **R** | Restart from the start line (the race clock keeps running) |
 | **F2** | Open or close the lobby panel |
 
-The timer and standings are at the top. When the first racer finishes, everyone else gets a finish window (45 s by default, host setting) before the results screen appears. From there the host can run the same level again or pick a new one.
+The timer and standings are at the top. When the first racer finishes, everyone else gets a finish window (45 s by default, host setting) before the results screen appears. From there the host can race the same level again, pick one, or hit **Random new level** for a featured level this lobby hasn't raced yet.
+
+**Stuck or bored of a level?** Press **Esc** to pause: the host gets **Skip to a random level** and **End race now**; everyone else gets **Vote to skip**. Once half the racers vote, the lobby moves on to a random unplayed level. The same buttons are in the F2 panel during a race.
+
+**Collisions**: with collisions off, other racers are see-through and never touch you or anything in your level. With collisions on, everyone passes through each other at the start line (and after a restart) and becomes solid once you've separated, so nobody gets launched at the start.
 
 **Steam invites and the overlay (optional).** Steam only shows its overlay (and the "Invite friends" window) in games it launched itself. To get that, make Steam launch the mod whenever you start Happy Wheels: in the MULTIPLAYER panel click **Copy Steam launch option**, then in Steam right-click **Happy Wheels** → **Properties** → **Launch Options** and paste it. Accepting a Steam invite then drops you straight into the lobby. To go back to the normal game, clear that Launch Options box. Without this, lobby codes always work.
 
@@ -60,7 +67,9 @@ Happy Wheels on Steam is an Electron app. Its `app.asar` is protected by Electro
 
 ```
 src/main/        main process
-  index.js         startup, IPC, updater, logging
+  index.js         startup flow (launcher steps), IPC, logging
+  launcher.js      launcher window: progress steps and fix-it prompts
+  preflight.js     Steam / regular-game checks, saved settings
   gameLocator.js   finds the Steam install (registry + libraryfolders.vdf)
   gameHost.js      loads the game's own main.js from its app.asar, serves its webroot,
                    injects our script into the game page, captures the Steam client
@@ -70,6 +79,7 @@ src/main/        main process
   log.js           file log
   localNet.js      DEV ONLY: localhost relay that stands in for Steam (multi-instance testing)
   devBridge.js     DEV ONLY: remote control for automated testing (never packaged)
+src/launcher/     launcher window page
 src/preload/     narrow window.hwmp API for the page
 src/renderer/    runs inside the game page (bundled to out/web/inject.js)
   hooks.js         hooks the game's webpack chunk array; finds Box2D/PIXI by prototype shape
@@ -100,7 +110,7 @@ npm install
 node scripts/dev-eval.js -e 'return window.__hwmp.mp.phase'   # evaluate JS in the running page (add --port 47801 for Bob)
 ```
 
-Dev-only switches (ignored by installed builds): `HWMP_LOCAL_NET=1`, `HWMP_MULTI=1`, `HWMP_PROFILE=n`, `HWMP_NO_STEAM=1`, `HWMP_NAME=…`, `HWMP_DEV_PORT=…`, `HWMP_GAME_DIR=…`.
+Dev-only switches (ignored by installed builds): `HWMP_LOCAL_NET=1`, `HWMP_MULTI=1`, `HWMP_PROFILE=n`, `HWMP_NO_STEAM=1`, `HWMP_NAME=…`, `HWMP_DEV_PORT=…`, `HWMP_GAME_DIR=…`, `HWMP_OFFSCREEN=1` (test windows park off-screen and never take focus), `HWMP_FAKE=nogame,nosteam` (preview the launcher's problem screens).
 
 ### Release
 

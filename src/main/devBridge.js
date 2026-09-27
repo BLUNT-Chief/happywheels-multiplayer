@@ -14,8 +14,9 @@ function startDevBridge(port = 47800) {
   const logs = [];
   const attached = new WeakSet();
 
-  function win() {
-    const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed());
+  function win(which) {
+    const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed() && (which === 'launcher' ? x.__hwmpLauncher : !x.__hwmpLauncher));
+    if (which === 'launcher') return w;
     if (w && !attached.has(w.webContents)) {
       attached.add(w.webContents);
       w.webContents.on('console-message', (details) => {
@@ -35,7 +36,7 @@ function startDevBridge(port = 47800) {
     try {
       const url = new URL(req.url, 'http://x');
       const body = await new Promise((r) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => r(b)); });
-      const w = win();
+      const w = win(url.searchParams.get('win'));
       if (!w) return send(503, { error: 'no window' });
       const wc = w.webContents;
       if (url.pathname === '/eval') {

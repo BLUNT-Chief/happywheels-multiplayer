@@ -93,8 +93,13 @@ class Puppet {
       // contact handlers for it: puppets are display-only (gore comes from replayed events), and a
       // throwing handler inside a physics step would wedge the whole world.
       for (const kid of container.children) if (!beforeKids.has(kid)) this.mcs.push(kid);
-      for (const b of allBodies(world)) if (!beforeBodies.has(b)) this.trackBody(b);
+      const added = [];
+      for (const b of allBodies(world)) if (!beforeBodies.has(b)) added.push(...this.trackBody(b));
       maps.forEach((m, i) => { for (const k of [...m.keys()]) if (!beforeListeners[i].has(k)) m.delete(k); });
+      // Box2D pairs overlapping shapes as they are created, before we could tag them as puppet
+      // parts, so the contact filter never saw them. Re-run the broadphase for them now; this
+      // drops those contacts (e.g. with the local player on the shared start line).
+      this.refilter(added);
     }
 
     // Drive the bodies named by the sender's layout; if our layout disagrees (different game
@@ -106,10 +111,19 @@ class Puppet {
     this.paint();
   }
 
+  /** Tags a body and its shapes as ours; returns the shapes. */
   trackBody(b) {
     this.bodies.add(b);
     b.__hwmpPuppet = this;
-    for (let s = b.GetShapeList(); s; s = s.m_next) { this.shapes.add(s); s.__hwmpPuppet = this; }
+    const shapes = [];
+    for (let s = b.GetShapeList(); s; s = s.m_next) { this.shapes.add(s); s.__hwmpPuppet = this; shapes.push(s); }
+    return shapes;
+  }
+
+  refilter(shapes) {
+    const world = this.session.m_world;
+    if (!world || world.m_lock) return;
+    for (const s of shapes) { try { if (!s.m_body.destroyed) world.Refilter(s); } catch {} }
   }
 
   refreshSlots() {
@@ -123,13 +137,15 @@ class Puppet {
   /** Bodies created after spawn (e.g. by a replayed break) must be tracked for filtering. */
   adoptNewBodies() {
     const world = this.session.m_world;
+    const added = [];
     for (const b of allBodies(world)) {
       if (b.__hwmpPuppet || this.bodies.has(b)) continue;
       // New bodies whose joints connect to one of ours belong to us.
       for (let j = b.m_jointList; j; j = j.next) {
-        if (this.bodies.has(j.other)) { this.trackBody(b); break; }
+        if (this.bodies.has(j.other)) { added.push(...this.trackBody(b)); break; }
       }
     }
+    this.refilter(added);
   }
 
   setAlpha(a) {

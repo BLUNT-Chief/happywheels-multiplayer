@@ -3,6 +3,7 @@
 
 import css from './styles.css';
 import { fmtTime } from '../net/race.js';
+import { log } from '../log.js';
 
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
@@ -49,8 +50,10 @@ export function createOverlay(mp, bridge, tx) {
   const resultsLayer = h('div');
   const toasts = h('div', { class: 'toasts' });
   const updateBox = h('div');
+  const tipLayer = h('div');
+  const raceMenuLayer = h('div');
   const pill = h('button', { class: 'pill', title: 'Multiplayer (F2)', onClick: () => toggle() });
-  scaled.append(hud, resultsLayer, panelLayer, toasts, updateBox, pill);
+  scaled.append(hud, resultsLayer, raceMenuLayer, panelLayer, toasts, updateBox, tipLayer, pill);
   root.append(tags, scaled);
   (document.body || document.documentElement).append(host);
 
@@ -79,8 +82,26 @@ export function createOverlay(mp, bridge, tx) {
   }, true);
   window.addEventListener('keyup', (e) => { if (isTyping()) e.stopImmediatePropagation(); }, true);
 
+  // First-run pointer at the MULTIPLAYER button, shown until the player has opened the panel once.
+  const TIP_KEY = 'hwmp.tipSeen';
+  let tipSeen = false;
+  try { tipSeen = localStorage.getItem(TIP_KEY) === '1'; } catch {}
+  function markTipSeen() {
+    if (tipSeen) return;
+    tipSeen = true;
+    try { localStorage.setItem(TIP_KEY, '1'); } catch {}
+    tipLayer.replaceChildren();
+  }
+  function renderTip() {
+    tipLayer.replaceChildren();
+    if (tipSeen || ui.open || mp.lobby || bridge.session) return;
+    tipLayer.append(h('div', { class: 'tip', onClick: () => toggle(true) }, h('b', null, 'Race your friends!'), h('br'), 'Click MULTIPLAYER (or press F2) to create or join a lobby.'));
+  }
+
   function toggle(v = !ui.open) {
+    if (v !== ui.open) log.info(`panel ${v ? 'opened' : 'closed'}`);
     ui.open = v;
+    if (v) markTipSeen();
     if (!v && shadow.activeElement) shadow.activeElement.blur();
     if (ui.open && !mp.lobby) refreshLobbies();
     render();
@@ -194,6 +215,21 @@ export function createOverlay(mp, bridge, tx) {
     ];
   }
 
+  /** Skip / end / vote controls for a race in progress. */
+  function raceControls() {
+    const race = mp.race;
+    if (!race || !['loading', 'countdown', 'racing'].includes(mp.phase)) return null;
+    if (mp.isHost) {
+      return [
+        h('button', { class: 'btn', onClick: () => act(async () => { const p = await mp.skipLevel(); if (p) { toast(`Next up: ${p.name}`); toggle(false); } }) }, 'Skip to a random level'),
+        h('button', { class: 'btn ghost', onClick: () => { mp.endRaceNow(); toggle(false); } }, 'End race now'),
+      ];
+    }
+    const voted = race.skipVotes.has(mp.self.id);
+    return [h('button', { class: 'btn', disabled: voted, onClick: () => mp.voteSkip() },
+      voted ? `Voted to skip (${race.skipVotes.size}/${mp.skipVotesNeeded()})` : `Vote to skip level (${race.skipVotes.size}/${mp.skipVotesNeeded()})`)];
+  }
+
   function playerRow(p) {
     const isHost = p.id === mp.hostId;
     const statusText = {
@@ -235,8 +271,13 @@ export function createOverlay(mp, bridge, tx) {
     search.addEventListener('input', () => { ui.levelFilter = search.value; fill(); });
     fill();
     const custom = h('input', { type: 'text', placeholder: 'Level ID', maxlength: 12, style: 'width: 110px' });
+    const random = h('button', { class: 'btn ghost', title: 'Pick a featured level this lobby has not raced yet', onClick: () => act(async () => {
+      const pick = await mp.randomLevel();
+      if (pick) toast(`Picked ${pick.name}`);
+    }) }, 'Random');
+    search.style.flex = '1';
     return h('div', { class: 'card stack' },
-      h('div', { class: 'label' }, 'Level'), cur, search, list,
+      h('div', { class: 'label' }, 'Level'), cur, h('div', { class: 'row' }, search, random), list,
       h('div', { class: 'row' }, h('span', { class: 'small muted' }, 'Or any user level:'), custom,
         h('button', { class: 'btn ghost', onClick: () => {
           const id = Number(custom.value.trim());
@@ -254,7 +295,6 @@ export function createOverlay(mp, bridge, tx) {
 
     const players = h('div', { class: 'list' }, [...mp.players.values()].map(playerRow));
     const chatLog = h('div', { class: 'chat-log' }, mp.chat.map((c) => h('div', null, h('span', { class: 'who' }, c.name), c.text)));
-    queueMicrotask(() => { chatLog.scrollTop = chatLog.scrollHeight; });
     const chatIn = h('input', { type: 'text', placeholder: 'Say something…', maxlength: 200, style: 'flex:1' });
     chatIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { mp.sendChat(chatIn.value); chatIn.value = ''; } });
 
@@ -310,16 +350,26 @@ export function createOverlay(mp, bridge, tx) {
               action),
             levelPicker(hostMode && !inRace),
             settings,
+            raceControls() ? h('div', { class: 'card row' }, h('span', { class: 'small muted' }, 'Tired of this level?'), raceControls()) : null,
             hostMode && mp.phase === 'results' ? h('button', { class: 'btn ghost', onClick: () => mp.backToLobby() }, 'End race for everyone') : null))),
     ];
   }
 
   let lastViewKey = '';
+  const SCROLLERS = ['.body', '.levels', '.chat-log'];
   function render() {
     // results modal (interactive, so only rebuilt on state changes)
     if (mp.phase !== 'results') ui.resultsHidden = false;
     resultsLayer.replaceChildren();
     if (mp.race && mp.phase === 'results' && !ui.resultsHidden && !ui.open) resultsLayer.append(results(mp.race));
+
+    renderTip();
+
+    // While the game's own pause menu is open during a race, offer skipping the level.
+    raceMenuLayer.replaceChildren();
+    const paused = !!(bridge.session && bridge.session.paused);
+    const controls = paused && !ui.open ? raceControls() : null;
+    if (controls) raceMenuLayer.append(h('div', { class: 'race-menu' }, h('span', { class: 't' }, 'Stuck on this level?'), controls));
 
     // pill
     pill.replaceChildren(h('span', { class: 'dot' }), 'MULTIPLAYER');
@@ -332,20 +382,38 @@ export function createOverlay(mp, bridge, tx) {
     if (!ui.open) { panelLayer.replaceChildren(); lastViewKey = ''; return; }
     const key = inLobby ? 'lobby' : 'browser';
     if (isTyping() && key === lastViewKey) return;
+    const sameView = key === lastViewKey;
     lastViewKey = key;
+    // Rebuilding replaces the scrollable elements, so carry their scroll positions over.
+    const saved = sameView ? SCROLLERS.map((sel) => [...panelLayer.querySelectorAll(sel)].map((el) => ({
+      top: el.scrollTop, atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4,
+    }))) : null;
     panelLayer.replaceChildren(
       h('div', { class: 'scrim', onClick: () => toggle(false) }),
       h('div', { class: 'panel' }, inLobby ? lobbyView() : browserView()));
+    SCROLLERS.forEach((sel, i) => {
+      panelLayer.querySelectorAll(sel).forEach((el, j) => {
+        const s = saved && saved[i][j];
+        if (sel === '.chat-log' && (!s || s.atBottom)) el.scrollTop = el.scrollHeight;
+        else if (s) el.scrollTop = s.top;
+      });
+    });
   }
 
   // ---- HUD (runs every animation frame) --------------------------------------------------------
   const tagEls = new Map();
   let lastHud = 0;
+  let lastInSession = false;
+  let lastPaused = false;
   function hudFrame(ts) {
     requestAnimationFrame(hudFrame);
     updateTags();
     if (ts - lastHud < 50) return; // text HUD at 20 Hz
     lastHud = ts;
+    // Entering/leaving a level moves the MULTIPLAYER button and hides the first-run tip.
+    const inSession = !!bridge.session;
+    const paused = !!(bridge.session && bridge.session.paused);
+    if (inSession !== lastInSession || paused !== lastPaused) { lastInSession = inSession; lastPaused = paused; render(); }
     const race = mp.race;
     hud.replaceChildren();
     if (race && mp.lobby) {
@@ -368,7 +436,7 @@ export function createOverlay(mp, bridge, tx) {
           const left = Math.max(0, Math.ceil((race.deadline - now) / 1000));
           hud.append(h('div', { class: 'hint', style: 'bottom: 34px' }, `Race ends in ${left}s`));
         }
-        hud.append(h('div', { class: 'hint' }, 'R = restart from the start line  ·  F2 = lobby'));
+        hud.append(h('div', { class: 'hint' }, 'R = restart from the start line  ·  Esc = pause / skip level  ·  F2 = lobby'));
       }
       hud.append(standings(race));
     }
@@ -399,6 +467,10 @@ export function createOverlay(mp, bridge, tx) {
         mp.isHost
           ? h('div', { class: 'row' },
             h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; toggle(true); } }, 'Change level'),
+            h('button', { class: 'btn', onClick: () => act(async () => {
+              const pick = await mp.randomLevel({ start: true });
+              if (pick) toast(`Next up: ${pick.name}`);
+            }) }, 'Random new level'),
             h('button', { class: 'btn green', onClick: () => mp.startRace() }, 'Race again'))
           : h('span', { class: 'small muted' }, 'Waiting for the host…')));
   }

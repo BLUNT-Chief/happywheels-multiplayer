@@ -39,6 +39,7 @@
       "!src/main/devBridge.js",
       "!src/main/localNet.js",
       "src/preload/**",
+      "src/launcher/**",
       "out/web/**"
     ],
     "asar": true,
@@ -58,9 +59,11 @@
       "artifactName": "HappyWheelsMultiplayer-Setup-${version}.${ext}"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "license": "build/installer-license.txt",
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "Happy Wheels Multiplayer",
