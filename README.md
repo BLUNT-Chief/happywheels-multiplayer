@@ -14,7 +14,7 @@ Race your friends in Happy Wheels. Everyone joins a lobby, the host picks a leve
 ## Install (players)
 
 1. Install **Happy Wheels** from Steam and make sure Steam is running and you're logged in.
-2. Download `HappyWheelsMultiplayer-Setup-x.y.z.exe` from the [Releases page](../../releases/latest) and run it.
+2. Download `HappyWheelsMultiplayer-Setup-x.y.z.exe` from the [Releases page](https://github.com/BLUNT-Chief/happywheels-multiplayer/releases/latest) and run it.
    - Windows may show "Windows protected your PC", because the installer isn't code-signed yet. Click **More info → Run anyway**.
 3. The mod starts right after installing. Later, open it from the **Happy Wheels Multiplayer** shortcut on your desktop or in the Start menu.
 
@@ -104,9 +104,8 @@ Dev-only switches (ignored by installed builds): `HWMP_LOCAL_NET=1`, `HWMP_MULTI
 
 ### Release
 
-1. One-time: set `build.publish[0].owner`/`repo` in `package.json` to your GitHub repository.
-2. `npm version patch` (or `minor`), then `git push --follow-tags`.
-3. The **Release** GitHub Action builds the installer and publishes it to GitHub Releases. Everyone's installed mod downloads it in the background and asks to restart (or updates on next quit).
+1. `npm version patch` (or `minor`), then `git push --follow-tags`.
+2. The **Release** GitHub Action builds the installer and publishes it to GitHub Releases. Everyone's installed mod downloads it in the background and asks to restart (or updates on next quit).
 
 Local build without publishing: `npm run dist` → `dist/HappyWheelsMultiplayer-Setup-x.y.z.exe`.
 

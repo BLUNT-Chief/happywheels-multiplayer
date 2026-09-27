@@ -71,10 +71,15 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "REPLACE_WITH_GITHUB_USER",
+        "owner": "BLUNT-Chief",
         "repo": "happywheels-multiplayer",
         "releaseType": "release"
       }
     ]
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BLUNT-Chief/happywheels-multiplayer.git"
+  },
+  "homepage": "https://github.com/BLUNT-Chief/happywheels-multiplayer"
 }
