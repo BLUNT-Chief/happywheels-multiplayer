@@ -61,7 +61,7 @@ function bootGame(opts) {
   steamworks.init = (appId) => {
     if (noSteam) throw new Error("Steam disabled for this instance");
     const client = origInit(appId);
-    try { onSteamClient(client, steamworks); } catch (e) { console.error('[hwmp] onSteamClient failed', e); }
+    try { onSteamClient(client, steamworks); } catch (e) { log.error('[hwmp] onSteamClient failed', e); }
     return client;
   };
 

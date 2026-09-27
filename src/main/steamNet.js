@@ -3,6 +3,7 @@
 // The renderer owns the game protocol; this module only manages the lobby and moves bytes.
 
 const { BrowserWindow } = require('electron');
+const { log } = require('./log');
 
 const PROTOCOL_VERSION = 1;
 const LOBBY_MARKER = 'hwmp';
@@ -32,9 +33,17 @@ class SteamNet {
     reg(Cb.P2PSessionRequest, ({ remote }) => {
       const id = String(remote);
       // Only accept P2P sessions from people in our lobby.
-      if (this.members.has(id)) this.client.networking.acceptP2PSession(BigInt(id));
+      if (this.isMember(id)) {
+        this.client.networking.acceptP2PSession(BigInt(id));
+        log.info(`[hwmp] accepted P2P session from ${id}`);
+      } else {
+        log.warn(`[hwmp] ignored P2P session request from non-member ${id}`);
+      }
     });
-    reg(Cb.P2PSessionConnectFail, ({ remote, error }) => this.emit('hwmp:net:connectFail', String(remote), error));
+    reg(Cb.P2PSessionConnectFail, ({ remote, error }) => {
+      log.warn(`[hwmp] P2P connection to ${String(remote)} failed (error ${error})`);
+      this.emit('hwmp:net:connectFail', String(remote), error);
+    });
     reg(Cb.LobbyChatUpdate, ({ lobby }) => { if (this.lobby && String(lobby) === String(this.lobby.id)) this.refreshMembers(); });
     reg(Cb.LobbyDataUpdate, ({ lobby }) => { if (this.lobby && String(lobby) === String(this.lobby.id)) this.pushLobby(); });
     reg(Cb.GameLobbyJoinRequested, (e) => {
@@ -72,6 +81,17 @@ class SteamNet {
     return { id: String(lobby.id), owner, members, limit, data };
   }
 
+  /** Membership check; on a miss, re-read the lobby first (Steam may not have told us yet). */
+  isMember(id) {
+    if (this.members.has(id)) return true;
+    if (!this.lobby) return false;
+    const now = Date.now();
+    if (now - (this.lastMissRefresh || 0) < 250) return false;
+    this.lastMissRefresh = now;
+    this.refreshMembers();
+    return this.members.has(id);
+  }
+
   refreshMembers() {
     if (!this.lobby) return;
     const info = this.lobbyInfo();
@@ -82,6 +102,9 @@ class SteamNet {
     // Polled every 2s: only tell the page when something changed (a re-render resets its UI state).
     const sig = JSON.stringify(info);
     if (sig === this.lastInfoSig) return;
+    if (!this.lastInfoSig || JSON.parse(this.lastInfoSig).members.length !== info.members.length) {
+      log.info(`[hwmp] lobby ${info.id}: ${info.members.length} member(s), owner ${info.owner}`);
+    }
     this.lastInfoSig = sig;
     this.emit('hwmp:lobby:update', info);
   }
@@ -92,6 +115,7 @@ class SteamNet {
     this.leave(true);
     const lobby = await this.client.matchmaking.createLobby(LobbyType[type] ?? LobbyType.friends, Math.max(2, Math.min(16, maxMembers | 0)));
     this.lobby = lobby;
+    log.info(`[hwmp] created lobby ${lobby.id} (${type})`);
     lobby.mergeFullData({
       [LOBBY_MARKER]: '1',
       proto: String(PROTOCOL_VERSION),
@@ -113,6 +137,7 @@ class SteamNet {
       throw new Error(`Version mismatch: lobby uses mod ${data.modVersion || '?'}, you have ${this.modVersion}. Restart to update.`);
     }
     this.lobby = lobby;
+    log.info(`[hwmp] joined lobby ${lobby.id}`);
     this.refreshMembers();
     return this.lobbyInfo();
   }
@@ -120,6 +145,7 @@ class SteamNet {
   /** silent: switching lobbies; the renderer resets its own state when it enters the new one. */
   leave(silent = false) {
     if (!this.lobby) return;
+    log.info(`[hwmp] left lobby ${this.lobby.id}`);
     try { this.lobby.leave(); } catch {}
     this.lobby = null;
     this.members = new Set();
@@ -175,7 +201,7 @@ class SteamNet {
       let pkt;
       try { pkt = net.readP2PPacket(size); } catch { return; }
       const from = pkt.steamId.steamId64.toString();
-      if (!this.members.has(from)) continue; // drop traffic from outside the lobby
+      if (!this.isMember(from)) continue; // drop traffic from outside the lobby
       this.stats.rx++; this.stats.rxBytes += pkt.data.length;
       this.emit('hwmp:net:packet', from, new Uint8Array(pkt.data));
     }

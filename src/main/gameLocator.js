@@ -91,4 +91,4 @@ function findGameDir(overridePath) {
   return null;
 }
 
-module.exports = { APP_ID, findGameDir, isGameDir, parseVdf };
+module.exports = { APP_ID, findGameDir, isGameDir, parseVdf, steamRoots };

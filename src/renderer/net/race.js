@@ -78,6 +78,12 @@ export class Multiplayer {
     b.on('levelComplete', () => this.onLocalFinish());
     b.on('exitedToMenu', () => this.onLocalExit());
     setInterval(() => this.pingHost(), 500);
+    // Handshake repair: keep greeting lobby members we haven't heard from (a dropped hello would
+    // otherwise leave them missing from the player list).
+    setInterval(() => {
+      if (!this.lobby || !this.self) return;
+      for (const m of this.peers()) if (!this.players.has(m)) this.sendTo(m, this.helloMsg());
+    }, 3000);
     // Host safety net: re-check race completion (covers finish windows inherited from a previous host).
     setInterval(() => { if (this.isHost && this.race && (this.phase === 'racing' || this.phase === 'countdown')) this.checkRaceProgress(); }, 1000);
     this.changed();

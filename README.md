@@ -19,7 +19,7 @@ Race your friends in Happy Wheels. Everyone joins a lobby, the host picks a leve
 3. Follow the setup wizard and leave **Launch Happy Wheels Multiplayer** ticked at the end.
 4. From now on, start the game from the **Happy Wheels Multiplayer** shortcut (desktop or Start menu), **not** the normal Happy Wheels shortcut. The normal one starts the regular game, which has no multiplayer menu.
 
-When it starts, a small launcher window checks for updates, finds your Happy Wheels install and checks Steam, then opens the game. If something is wrong (Steam closed, game not installed, the regular Happy Wheels already open) it tells you and offers a button to fix it.
+When it starts, a small launcher window checks for updates, finds your Happy Wheels install, links Steam's Play button (below) and checks Steam, then opens the game. If something is wrong (Steam closed, game not installed, the regular Happy Wheels already open) it tells you and offers a button to fix it.
 
 It installs just for your Windows user (no admin rights needed), keeps its own save profile, and never modifies the Happy Wheels install.
 
@@ -48,7 +48,7 @@ The timer and standings are at the top. When the first racer finishes, everyone 
 
 **Collisions**: with collisions off, other racers are see-through and never touch you or anything in your level. With collisions on, everyone passes through each other at the start line (and after a restart) and becomes solid once you've separated, so nobody gets launched at the start.
 
-**Steam invites and the overlay (optional).** Steam only shows its overlay (and the "Invite friends" window) in games it launched itself. To get that, make Steam launch the mod whenever you start Happy Wheels: in the MULTIPLAYER panel click **Copy Steam launch option**, then in Steam right-click **Happy Wheels** → **Properties** → **Launch Options** and paste it. Accepting a Steam invite then drops you straight into the lobby. To go back to the normal game, clear that Launch Options box. Without this, lobby codes always work.
+**Steam's Play button.** The launcher sets up Happy Wheels in your Steam library to open Multiplayer, so pressing **Play** in Steam just works, with the Steam overlay and **Invite friends** window, and accepting an invite drops you straight into the lobby. Steam only saves this while it's closed: if Steam is closed when the mod starts it happens automatically, otherwise the launcher asks once and restarts Steam (about 20 seconds). If you already had your own launch options for Happy Wheels, it asks before replacing them. Uninstalling the mod puts Steam's Play button back to the normal game. To turn it off yourself, clear Steam → Happy Wheels → Properties → Launch Options and pick **Don't ask again** in the launcher.
 
 ## Troubleshooting
 

@@ -164,8 +164,8 @@ export function createOverlay(mp, bridge, tx) {
     const code = h('input', { type: 'text', placeholder: 'Lobby code', maxlength: 24 });
     const type = h('select', { onChange: (e) => mp.setLobbyType(e.target.value) },
       h('option', { value: 'public', selected: mp.prefs.lobbyType === 'public' }, 'Listed (anyone can join)'),
-      h('option', { value: 'friends', selected: mp.prefs.lobbyType === 'friends' }, 'Friends (invite or code)'),
-      h('option', { value: 'private', selected: mp.prefs.lobbyType === 'private' }, 'Private (code only)'));
+      h('option', { value: 'friends', selected: mp.prefs.lobbyType === 'friends' }, 'Friends only (not listed)'),
+      h('option', { value: 'private', selected: mp.prefs.lobbyType === 'private' }, 'Private (Steam invite only)'));
     const list = h('div', { class: 'list' });
     if (ui.loadingLobbies && !ui.lobbies) list.append(h('div', { class: 'empty' }, 'Looking for lobbies…'));
     else if (ui.lobbiesErr) list.append(h('div', { class: 'empty error' }, ui.lobbiesErr));
@@ -203,8 +203,8 @@ export function createOverlay(mp, bridge, tx) {
             } }, 'Join by code')),
           list),
         h('div', { class: 'card stack' },
-          h('h2', null, 'Steam overlay & invites (optional)'),
-          h('div', { class: 'small muted' }, 'Steam only shows its overlay and invite window in games it launches. In Steam, right-click Happy Wheels → Properties → Launch Options, paste this, and Steam will start the multiplayer mod instead. Clear it to go back to the normal game.'),
+          h('h2', null, "Steam's Play button"),
+          h('div', { class: 'small muted' }, 'The launcher sets up Happy Wheels in Steam to open Multiplayer (with Steam invites and the overlay). If that was skipped, you can do it by hand: in Steam, right-click Happy Wheels → Properties → Launch Options and paste this. Clear it to go back to the normal game.'),
           h('div', { class: 'row' }, h('button', { class: 'btn ghost', onClick: async () => {
             const opt = await tx.steamLaunchOption().catch(() => null);
             if (!opt) return;

@@ -8,9 +8,9 @@ Before you install:
  * You need your own copy of Happy Wheels on Steam. This mod runs that copy; it does
    not include or change any of the game's files.
  * Steam must be running and logged in to use multiplayer lobbies.
- * After installing, always start the game from the "Happy Wheels Multiplayer"
-   shortcut. The normal Happy Wheels shortcut starts the regular game, which has no
-   multiplayer menu.
+ * Start the game from the "Happy Wheels Multiplayer" shortcut. The launcher can also
+   set up Happy Wheels in your Steam library to open Multiplayer when you press Play
+   (it changes the game's Steam Launch Options; uninstalling puts them back).
  * The mod updates itself automatically.
 
 This project is not affiliated with or endorsed by Fancy Force / Total Jerkface.

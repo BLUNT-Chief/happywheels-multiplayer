@@ -8,6 +8,7 @@ const { BrowserWindow, ipcMain, app } = require('electron');
 const STEPS = [
   { id: 'update', label: 'Checking for updates' },
   { id: 'game', label: 'Finding Happy Wheels' },
+  { id: 'link', label: "Setting up Steam's Play button" },
   { id: 'steam', label: 'Connecting to Steam' },
   { id: 'start', label: 'Starting the game' },
 ];

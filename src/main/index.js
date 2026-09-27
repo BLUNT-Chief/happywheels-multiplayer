@@ -14,6 +14,7 @@ const { registerNetIpc } = require('./netIpc');
 const { initLog, log, captureWebContents } = require('./log');
 const { Launcher } = require('./launcher');
 const preflight = require('./preflight');
+const steamLaunch = require('./steamLaunch');
 
 const IS_DEV_BUILD = !app.isPackaged;
 const DEV = IS_DEV_BUILD && process.argv.includes('--hwmp-dev');
@@ -63,7 +64,39 @@ function acquireGameLock(userDataDir) {
   return got;
 }
 
+/**
+ * Run by the uninstaller (not on updates): point Steam's Play button back at the normal game.
+ * Steam overwrites its config while running, so it has to be closed for this.
+ */
+async function uninstallCleanup() {
+  await app.whenReady();
+  let closedSteam = false;
+  for (;;) {
+    const st = steamLaunch.status(process.execPath);
+    const ours = (st.values || []).some((v) => v && v.toLowerCase().includes('happy wheels multiplayer.exe'));
+    if (!ours) break;
+    if (!(await steamLaunch.steamRunning())) {
+      try { steamLaunch.apply(process.execPath, false); } catch (e) { log.error('[hwmp] could not restore Steam launch options', e); }
+      break;
+    }
+    const choice = dialog.showMessageBoxSync({
+      type: 'warning',
+      title: APP_TITLE,
+      message: 'Close Steam to finish uninstalling',
+      detail: 'Happy Wheels in Steam is set to open Multiplayer. Steam has to be closed so it can be set back to the normal game.',
+      buttons: ['Close Steam for me', 'Retry', 'Skip'],
+      defaultId: 0,
+      cancelId: 2,
+    });
+    if (choice === 2) break;
+    if (choice === 0) closedSteam = await steamLaunch.shutdownSteam();
+  }
+  if (closedSteam) steamLaunch.startSteam();
+  app.exit(0);
+}
+
 function main() {
+  if (process.argv.includes('--hwmp-uninstall')) { uninstallCleanup(); return; }
   const profile = ENV('HWMP_PROFILE');
   const userDataDir = path.join(app.getPath('appData'), profile ? `HappyWheelsMP-${profile}` : 'HappyWheelsMP');
   app.setPath('userData', userDataDir); // before 'ready', so our browser profile is separate from the game's
@@ -167,6 +200,48 @@ function main() {
     });
 }
 
+/**
+ * Sets Happy Wheels' Steam Launch Options to start this app. Steam must be closed to change them:
+ * done silently when it already is, otherwise after asking once (restarts Steam).
+ */
+async function linkSteamPlayButton(ui, settings, userDataDir) {
+  if (!app.isPackaged) { ui.step('link', 'done', 'Skipped (development build)'); return; }
+  const exe = process.execPath;
+  let st;
+  try { st = steamLaunch.status(exe); } catch (e) { log.warn('[hwmp] steam link status failed', e); st = { state: 'unknown' }; }
+  if (st.state === 'on') { ui.step('link', 'done', 'Pressing Play on Happy Wheels in Steam opens Multiplayer'); return; }
+  if (st.state === 'unknown') { ui.step('link', 'warn', 'Steam install not found'); return; }
+  if (settings.steamLink === 'never') { ui.step('link', 'done', 'Turned off'); return; }
+  const custom = st.state === 'custom';
+  const doApply = () => {
+    const changed = steamLaunch.apply(exe, true, { replaceCustom: custom });
+    log.info(`[hwmp] linked Steam's Play button (${changed.length} account(s))`);
+    ui.step('link', 'done', 'Pressing Play on Happy Wheels in Steam now opens Multiplayer');
+  };
+  const running = await steamLaunch.steamRunning();
+  if (!running && !custom) {
+    try { doApply(); } catch (e) { log.error('[hwmp] steam link failed', e); ui.step('link', 'warn', 'Could not update Steam settings'); }
+    return;
+  }
+  ui.step('link', 'active');
+  const a = await ui.ask({
+    kind: 'info',
+    title: "Open Multiplayer from Steam's Play button?",
+    text: (custom ? `Happy Wheels currently has your own Steam launch options (${(st.values || []).find((v) => v && v.trim()) || ''}). They would be replaced.\n` : '')
+      + (running ? 'Then pressing Play on Happy Wheels in Steam starts Multiplayer, with Steam invites working. Steam has to restart once to save this (about 20 seconds).' : 'Then pressing Play on Happy Wheels in Steam starts Multiplayer, with Steam invites working.'),
+    actions: [{ id: 'yes', label: running ? 'Set it up (restarts Steam)' : 'Set it up', primary: true }, { id: 'later', label: 'Not now' }, { id: 'never', label: "Don't ask again" }],
+  });
+  if (a === 'quit') { app.quit(); return; }
+  if (a === 'never') { settings.steamLink = 'never'; preflight.saveSettings(userDataDir, settings); ui.step('link', 'done', 'Turned off'); return; }
+  if (a !== 'yes') { ui.step('link', 'done', 'Not set up (you will be asked next time)'); return; }
+  if (running) {
+    ui.step('link', 'active', 'Closing Steam…');
+    if (!(await steamLaunch.shutdownSteam())) { ui.step('link', 'warn', 'Steam did not close; try again next time'); return; }
+  }
+  try { doApply(); } catch (e) { log.error('[hwmp] steam link failed', e); ui.step('link', 'warn', 'Could not update Steam settings'); }
+  if (running) { ui.step('link', 'done', 'Linked. Starting Steam again…'); steamLaunch.startSteam(); }
+}
+
 async function launch({ userDataDir, updater, steamNet, haveLock, setTransport }) {
   const ui = new Launcher({ version: MOD_VERSION });
   await ui.open();
@@ -243,6 +318,9 @@ async function launch({ userDataDir, updater, steamNet, haveLock, setTransport }
   }
   if (!haveLock && !acquireGameLock(userDataDir)) { app.quit(); return; }
   ui.step('game', 'done', gameDir);
+
+  // Make Steam's Play button for Happy Wheels open the mod (installed builds only).
+  await linkSteamPlayButton(ui, settings, userDataDir);
 
   // 3. Steam: required for lobbies; the game itself also works without it.
   ui.step('steam', 'active');

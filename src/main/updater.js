@@ -32,7 +32,7 @@ function createUpdater({ isTrustedSender, log = console }) {
 
   ipcMain.handle('hwmp:update:status', (e) => (isTrustedSender(e) ? status : null));
   ipcMain.on('hwmp:update:install', (e) => {
-    if (isTrustedSender(e) && status.state === 'ready') setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    if (isTrustedSender(e) && status.state === 'ready') setImmediate(() => autoUpdater.quitAndInstall(true, true));
   });
 
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
