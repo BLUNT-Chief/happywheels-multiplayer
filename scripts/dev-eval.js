@@ -6,7 +6,7 @@ const args = process.argv.slice(2);
 const main = args.includes('--main');
 const pi = args.indexOf('--port');
 const port = pi >= 0 ? Number(args[pi + 1]) : 47800;
-const rest = args.filter((a, i) => a !== '--main' && i !== pi && i !== pi + 1);
+const rest = args.filter((a, i) => a !== '--main' && (pi < 0 || (i !== pi && i !== pi + 1)));
 const code = rest[0] === '-e' ? rest[1] : fs.readFileSync(rest[0], 'utf8');
 const req = http.request({ host: '127.0.0.1', port, path: main ? '/main' : '/eval', method: 'POST' }, (res) => {
   let b = '';

@@ -20,6 +20,13 @@ function buildCharacterData(session, characterIndex) {
   return loader._characterData;
 }
 
+/** The session's contact-listener registries (Maps keyed by shape). */
+function listenerMaps(session) {
+  const cl = session.contactListener;
+  if (!cl) return [];
+  return Object.keys(cl).map((k) => cl[k]).filter((v) => v instanceof Map);
+}
+
 function allBodies(world) {
   const s = new Set();
   for (let b = world.m_bodyList; b; b = b.m_next) s.add(b);
@@ -46,6 +53,10 @@ class Puppet {
     this.character = null;
     this.slotBodies = [];
     this.dead = false;
+    // Collisions only 'arm' once this racer and the local player have been apart for a moment,
+    // so everyone can share the start line (and restart) without exploding into each other.
+    this.armed = false;
+    this.clearSteps = 0;
   }
 
   spawn() {
@@ -56,24 +67,35 @@ class Puppet {
     const cd = buildCharacterData(session, this.spec.characterIndex);
     const beforeKids = new Set(container.children);
     const beforeBodies = allBodies(world);
+    const maps = listenerMaps(session);
+    const beforeListeners = maps.map((m) => new Set(m.keys()));
     const saved = { ch: session._character, idx: S.characterIndex, hv: S.hideVehicle };
     let ch;
     try {
-      S.characterIndex = this.spec.characterIndex;
-      S.hideVehicle = !!this.spec.hideVehicle;
-      session.setupCharacter(cd);
-      ch = session._character;
+      try {
+        S.characterIndex = this.spec.characterIndex;
+        S.hideVehicle = !!this.spec.hideVehicle;
+        session.setupCharacter(cd);
+        ch = session._character;
+      } finally {
+        S.characterIndex = saved.idx;
+        S.hideVehicle = saved.hv;
+      }
+      ch.main = false;
+      ch.__hwmpPuppet = true;
+      this.character = ch;
+      // Some characters' setup refers to session.character (e.g. the dad's kid bolts its seat to
+      // session.character.frameBody), so the puppet is the session's character while it builds.
+      ch.create();
     } finally {
       session._character = saved.ch;
-      S.characterIndex = saved.idx;
-      S.hideVehicle = saved.hv;
+      // Whatever happened, take ownership of everything the spawn created, and drop the game's
+      // contact handlers for it: puppets are display-only (gore comes from replayed events), and a
+      // throwing handler inside a physics step would wedge the whole world.
+      for (const kid of container.children) if (!beforeKids.has(kid)) this.mcs.push(kid);
+      for (const b of allBodies(world)) if (!beforeBodies.has(b)) this.trackBody(b);
+      maps.forEach((m, i) => { for (const k of [...m.keys()]) if (!beforeListeners[i].has(k)) m.delete(k); });
     }
-    ch.main = false;
-    ch.__hwmpPuppet = true;
-    this.character = ch;
-    ch.create();
-    for (const kid of container.children) if (!beforeKids.has(kid)) this.mcs.push(kid);
-    for (const b of allBodies(world)) if (!beforeBodies.has(b)) this.trackBody(b);
 
     // Drive the bodies named by the sender's layout; if our layout disagrees (different game
     // build), names still line up and unknown ones are simply skipped.
@@ -184,11 +206,14 @@ class Puppet {
     }
     const container = this.session.containerSprite;
     const beforeKids = new Set(container.children);
+    const maps = listenerMaps(this.session);
+    const beforeListeners = maps.map((m) => new Set(m.keys()));
     try {
       target[method](...args.slice(0, 4));
     } catch (e) {
       console.warn('[hwmp] puppet event failed', method, e);
     }
+    maps.forEach((m, i) => { for (const k of [...m.keys()]) if (!beforeListeners[i].has(k)) m.delete(k); });
     this.adoptNewBodies();
     this.refreshSlots();
     // Display objects created by the event (gore pieces) belong to this puppet too.
@@ -201,11 +226,7 @@ class Puppet {
     if (this.dead) return;
     this.dead = true;
     const session = this.session;
-    const cl = session.contactListener;
-    if (cl && typeof cl.deleteListener === 'function') {
-      const types = ['ADD', 'REMOVE', 'PERSIST', 'RESULT'].map((t) => cl.constructor[t]).filter(Boolean);
-      for (const s of this.shapes) for (const t of types) { try { cl.deleteListener(t, s); } catch {} }
-    }
+    for (const m of listenerMaps(session)) for (const s of this.shapes) m.delete(s);
     if (worldAlive && session.m_world) {
       for (const b of this.bodies) { try { if (!b.destroyed) session.m_world.DestroyBody(b); } catch {} }
     }
@@ -217,6 +238,17 @@ class Puppet {
     this.bodies.clear();
     this.shapes.clear();
     this.character = null;
+  }
+
+  /** Axis-aligned box around the driven bodies (meters), padded for limb size. */
+  bounds(pad = 1.2) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const b of this.driven) {
+      if (b.destroyed) continue;
+      const p = b.m_xf.position;
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    }
+    return x0 === Infinity ? null : { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
   }
 
   /** Screen-space anchor (world coords, pixels) for name tags. */
@@ -241,7 +273,7 @@ export function makeContactFilter(defaultFilter, opts) {
       const ps = pa ? a : b;
       const other = pa ? b : a;
       if (other.IsSensor?.() || other.m_isSensor || ps.m_isSensor) return false;
-      if (opts.isLocalShape(other)) return opts.collisions();
+      if (opts.isLocalShape(other)) return opts.collisions() && p.armed;
       const ob = other.m_body;
       // Free (non network-driven) puppet parts may rest on static level geometry; nothing else.
       if (ob && ob.IsStatic() && !p.driven.has(ps.m_body)) return defaultFilter.ShouldCollide(a, b);

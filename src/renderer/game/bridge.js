@@ -7,6 +7,8 @@ import { computeLayout, hookCharacterEvents, characterTree, bodiesOf } from './c
 import { Puppet, makeContactFilter } from './puppets.js';
 
 const listeners = {};
+const UNARMED_ALPHA = 0.7;
+const ARM_AFTER_STEPS = 15; // half a second apart at 30 Hz
 function emit(evt, ...a) { for (const f of listeners[evt] || []) { try { f(...a); } catch (e) { console.error('[hwmp] bridge listener', evt, e); } } }
 
 export const bridge = {
@@ -105,7 +107,7 @@ export const bridge = {
     const entry = this.puppetSpecs.get(peerId);
     if (!entry || !this.session || !this.session.m_world) return null;
     const p = new Puppet(this.session, entry.spec);
-    p.alpha = this.collisions ? 1 : this.ghostAlpha;
+    p.alpha = this.collisions ? UNARMED_ALPHA : this.ghostAlpha;
     try {
       p.spawn();
     } catch (e) {
@@ -150,7 +152,10 @@ export const bridge = {
 
   setCollisions(on) {
     this.collisions = !!on;
-    for (const p of this.puppets.values()) p.setAlpha(this.collisions ? 1 : this.ghostAlpha);
+    for (const p of this.puppets.values()) {
+      p.armed = false; p.clearSteps = 0;
+      p.setAlpha(this.collisions ? UNARMED_ALPHA : this.ghostAlpha);
+    }
   },
 };
 
@@ -264,6 +269,7 @@ function installGameHooks() {
     if (!s || world !== s.m_world || !bridge.puppets.size) return;
     const now = bridge.now();
     for (const p of bridge.puppets.values()) p.apply(now);
+    if (bridge.collisions && !bridge.frozen) armCollisions(s);
   });
   onHook('postStep', (world) => {
     const s = bridge.session;
@@ -277,6 +283,30 @@ function installGameHooks() {
     for (const p of bridge.puppets.values()) { p.apply(now); p.paint(); }
     emit('frame', s);
   });
+}
+
+function localBounds(session, pad = 1.2) {
+  const ch = session.character;
+  if (!ch) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const b of bodiesOf(ch, bridge.layout)) {
+    if (!b) continue;
+    const p = b.m_xf.position;
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+  }
+  return x0 === Infinity ? null : { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
+}
+
+function armCollisions(session) {
+  const mine = localBounds(session);
+  if (!mine) return;
+  for (const p of bridge.puppets.values()) {
+    if (p.armed) continue;
+    const o = p.bounds();
+    const overlap = o && !(o.x1 < mine.x0 || o.x0 > mine.x1 || o.y1 < mine.y0 || o.y0 > mine.y1);
+    p.clearSteps = overlap ? 0 : p.clearSteps + 1;
+    if (p.clearSteps >= ARM_AFTER_STEPS) { p.armed = true; p.setAlpha(1); }
+  }
 }
 
 function onSessionStart(session) {

@@ -38,7 +38,15 @@ function patchWorld(World) {
     state.lastWorld = this;
     if (stepSuppressed(this)) return undefined;
     emit('preStep', this, args);
-    const r = origStep.apply(this, args);
+    let r;
+    try {
+      r = origStep.apply(this, args);
+    } catch (e) {
+      // Box2D leaves the world locked if anything throws mid-step, after which every body
+      // creation silently fails. Unlock so one bad callback can't break the session for good.
+      this.m_lock = false;
+      throw e;
+    }
     emit('postStep', this, args);
     return r;
   };
