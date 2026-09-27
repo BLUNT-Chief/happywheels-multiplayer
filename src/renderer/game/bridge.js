@@ -314,7 +314,12 @@ function installGameHooks() {
   });
   wrap(SessionP, 'levelComplete', (orig) => function (...a) {
     const r = orig.apply(this, a);
-    if (this === bridge.session) emit('levelComplete', this);
+    if (this === bridge.session) {
+      emit('levelComplete', this);
+      // The game locks the controls at the finish (its victory menu takes over). In a race that
+      // menu is suppressed, so give the controls back: players keep driving while others finish.
+      if (bridge.raceMode) this.inputAllowed = true;
+    }
     return r;
   });
   for (const name of ['run30fps', 'run60fps']) {
