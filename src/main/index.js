@@ -75,7 +75,7 @@ function main() {
     fn(`[page] ${String(message).slice(0, 4000)}`);
   });
   ipcMain.on('hwmp:devFlags', (e) => {
-    e.returnValue = { dev: DEV, capture: DEV && ENV('HWMP_CAPTURE') === '1', modVersion: MOD_VERSION };
+    e.returnValue = { dev: DEV, modVersion: MOD_VERSION };
   });
   ipcMain.on('hwmp:openExternal', (e, url) => {
     if (!isTrustedSender(e)) return;

@@ -1,7 +1,6 @@
 // Injected into the game page between the library bundle and the game bundle.
 import { log } from './log.js';
 import { installHooks, libs, state, on } from './hooks.js';
-import { installDevCapture } from './devCapture.js';
 import { initBridge, bridge } from './game/bridge.js';
 import { Game } from './game/locate.js';
 import { Multiplayer } from './net/race.js';
@@ -10,8 +9,6 @@ import { createOverlay } from './ui/overlay.js';
 const tx = window.hwmp;
 
 /* global __DEV__ */
-if (__DEV__ && tx?.devCapture) installDevCapture();
-
 // Must happen synchronously, before the game bundle boots.
 const chunkGlobals = installHooks();
 if (!chunkGlobals.length) log.warn('webpack chunk array not found; the game layout may have changed');

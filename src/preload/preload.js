@@ -12,7 +12,6 @@ function listen(channel, cb) {
 
 contextBridge.exposeInMainWorld('hwmp', {
   dev: flags.dev === true,
-  devCapture: flags.capture === true,
   modVersion: flags.modVersion || '',
   version: () => ipcRenderer.invoke('hwmp:version'),
   steamLaunchOption: () => ipcRenderer.invoke('hwmp:steamLaunchOption'),
