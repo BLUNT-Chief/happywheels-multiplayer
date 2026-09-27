@@ -87,6 +87,25 @@ Good to know: pressing R restarts the level, so anything that moved (crates, doo
 
 ---
 
+## Privacy
+
+Happy Wheels Multiplayer has no servers of its own and collects no analytics or telemetry. It only connects to:
+
+- **Steam**, to create and join lobbies, show player names and avatars, and send race data to the other players in your lobby.
+- **GitHub**, to check for and download updates to the mod.
+- **totaljerkface.com**, the Happy Wheels server, for levels, level lists and replays (the game itself uses it the same way).
+
+Logs stay on your PC (`%APPDATA%\HappyWheelsMP\logs`) unless you choose to share them.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). (Signed releases start once SignPath has reviewed the project; until then the installer is unsigned.)
+
+- Committers and reviewers: [BLUNT-Chief](https://github.com/BLUNT-Chief)
+- Approvers: [BLUNT-Chief](https://github.com/BLUNT-Chief)
+
+Releases are built from this repository by GitHub Actions (`.github/workflows/release.yml`); only those builds are signed.
+
 ## How it works (developers)
 
 Happy Wheels on Steam is an Electron app. Its `app.asar` is protected by Electron's asar-integrity and only-load-from-asar fuses, so it can't be patched in place, and patching would also break on every Steam update. Instead the mod is **its own Electron app** (pinned to the game's Electron version) that boots the player's installed copy of the game:
