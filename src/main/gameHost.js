@@ -10,6 +10,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const electron = require('electron');
+const { log } = require('./log');
 
 const GAME_HOSTS = new Set(['totaljerkface.com', 'www.totaljerkface.com', 'beta.totaljerkface.com']);
 const APP_PREFIX = '/__hw_app__/';
@@ -29,6 +30,7 @@ function injectIntoHtml(html) {
   // Must run after dependencies.js (libraries) and before index.js (game).
   const re = /<script[^>]*src="[^"]*js\/index\.js"[^>]*>/i;
   if (re.test(html)) return html.replace(re, (m) => tag + m);
+  log.warn('[hwmp] game page layout changed; injecting at <body>');
   // Unknown layout: inject as early as possible; inject.js copes with running before the libraries.
   return html.replace(/<body[^>]*>/i, (m) => m + tag);
 }
@@ -117,7 +119,8 @@ async function serveModFile(root, rel) {
     return new Response(data, {
       headers: { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' },
     });
-  } catch {
+  } catch (e) {
+    log.error('[hwmp] could not serve mod file', rel, e && e.message);
     return new Response('Not found', { status: 404 });
   }
 }

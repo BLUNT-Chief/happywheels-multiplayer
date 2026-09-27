@@ -1,5 +1,6 @@
 // Lobby + race state machine. The Steam lobby owner is the host and is authoritative for race
 // control (load, start, results). Body state is streamed peer-to-peer by every player.
+import { log } from '../log.js';
 
 import { T, encodeState, decodeState, encodeCtrl, decodeCtrl, encodePing, decodePing, V, cleanText } from './protocol.js';
 import { Clock } from './clock.js';
@@ -20,7 +21,7 @@ export class Multiplayer {
     this.bridge = bridge;
     this.clock = new Clock();
     this.listeners = new Set();
-    this.prefs = { character: 1, collisions: false, graceSec: 45, lobbyType: 'friends', ...loadPrefs() };
+    this.prefs = { character: 1, collisions: false, graceSec: 45, lobbyType: 'public', ...loadPrefs() };
     this.self = null;          // { id, name }
     this.lobby = null;         // { id, owner, members, data }
     this.players = new Map();  // id -> player
@@ -44,7 +45,7 @@ export class Multiplayer {
 
   // ---- plumbing ------------------------------------------------------------------------------
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
-  changed() { for (const fn of this.listeners) { try { fn(this); } catch (e) { console.error(e); } } }
+  changed() { for (const fn of this.listeners) { try { fn(this); } catch (e) { log.error(e); } } }
   toast(text, kind = 'info') { for (const fn of this.listeners) { try { fn(this, { toast: text, kind }); } catch {} } }
 
   get isHost() { return !!(this.lobby && this.self && this.lobby.owner === this.self.id); }
@@ -113,11 +114,11 @@ export class Multiplayer {
   }
 
   newPlayer(id, name) {
-    return { id, name: cleanText(name || 'Player', 32), ready: false, character: 1, status: 'lobby', finishMs: null, modVersion: '' };
+    return { id, name: cleanText(name || 'Player', 32), ready: false, character: 1, status: 'lobby', finishMs: null, modVersion: '', gameVersion: id === this.self?.id ? this.bridge.gameVersion() : '' };
   }
 
   helloMsg() {
-    return { t: 'hello', name: this.self.name, character: this.prefs.character, ready: !!this.players.get(this.self.id)?.ready, ver: this.tx.modVersion || '' };
+    return { t: 'hello', name: this.self.name, character: this.prefs.character, ready: !!this.players.get(this.self.id)?.ready, ver: this.tx.modVersion || '', game: this.bridge.gameVersion() };
   }
 
   onLobbyUpdate(info) {
@@ -157,6 +158,7 @@ export class Multiplayer {
       levelId: this.settings.level ? this.settings.level.id : 0,
       phase: this.phase === 'idle' ? 'lobby' : this.phase,
       collisions: this.settings.collisions ? 1 : 0,
+      game: this.bridge.gameVersion(),
     };
   }
 
@@ -409,7 +411,7 @@ export class Multiplayer {
       }
       case T.PING: {
         const p = decodePing(bytes);
-        if (p && this.isHost) this.send([from], encodePing(T.PONG, p.id, p.t0, performance.now()), false);
+        if (p && this.isHost) this.send([from], encodePing(T.PONG, p.id, p.t0, this.clock.now()), false);
         return;
       }
       case T.PONG: {
@@ -447,6 +449,7 @@ export class Multiplayer {
         const p = player || this.newPlayer(from, m.name);
         p.name = cleanText(m.name, 32) || 'Player';
         p.modVersion = cleanText(m.ver, 20);
+        p.gameVersion = cleanText(m.game, 20);
         if (V.int(m.character, 1, 11)) p.character = m.character;
         if (V.bool(m.ready)) p.ready = m.ready;
         const isNew = !player;

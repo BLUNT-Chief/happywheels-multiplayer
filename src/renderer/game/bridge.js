@@ -1,5 +1,6 @@
 // High-level control of the game for the race logic: load a level by id, freeze everyone at the
 // start line, detect restarts / finishes, and keep remote puppets in sync with the local world.
+import { log } from '../log.js';
 
 import { on as onHook, state as hookState } from '../hooks.js';
 import { Game } from './locate.js';
@@ -9,7 +10,7 @@ import { Puppet, makeContactFilter } from './puppets.js';
 const listeners = {};
 const UNARMED_ALPHA = 0.7;
 const ARM_AFTER_STEPS = 15; // half a second apart at 30 Hz
-function emit(evt, ...a) { for (const f of listeners[evt] || []) { try { f(...a); } catch (e) { console.error('[hwmp] bridge listener', evt, e); } } }
+function emit(evt, ...a) { for (const f of listeners[evt] || []) { try { f(...a); } catch (e) { log.error('bridge listener', evt, e); } } }
 
 export const bridge = {
   ready: false,
@@ -37,6 +38,8 @@ export const bridge = {
   },
 
   characterNames() { return (Game.Settings?.characterNames || []).slice(); },
+
+  gameVersion() { return String(Game.Settings?.CURRENT_VERSION_STRING || ''); },
 
   async featuredLevels() {
     const F = Game.FeaturedLevels;
@@ -111,7 +114,7 @@ export const bridge = {
     try {
       p.spawn();
     } catch (e) {
-      console.error('[hwmp] failed to spawn puppet', e);
+      log.error('failed to spawn puppet', e);
       try { p.destroy(true); } catch {}
       return null;
     }

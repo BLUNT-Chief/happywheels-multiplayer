@@ -2,17 +2,20 @@
   "name": "happywheels-multiplayer",
   "productName": "Happy Wheels Multiplayer",
   "version": "0.1.0",
-  "description": "Multiplayer racing mod for Happy Wheels (Steam)",
+  "description": "Unofficial multiplayer racing mod for Happy Wheels on Steam",
   "main": "src/main/index.js",
   "private": true,
   "license": "MIT",
-  "author": "HWMP",
+  "author": {
+    "name": "Happy Wheels Multiplayer contributors"
+  },
   "scripts": {
     "build:renderer": "node scripts/build-renderer.js",
-    "start": "npm run build:renderer && electron .",
-    "dev": "npm run build:renderer && electron . --hwmp-dev",
-    "dist": "npm run build:renderer && electron-builder --win --publish never",
-    "release": "npm run build:renderer && electron-builder --win --publish always"
+    "start": "node scripts/build-renderer.js && electron .",
+    "dev": "node scripts/build-renderer.js && electron . --hwmp-dev",
+    "icon": "electron scripts/make-icon.js",
+    "dist": "node scripts/build-renderer.js --prod && electron-builder --win --publish never",
+    "release": "node scripts/build-renderer.js --prod && electron-builder --win --publish always"
   },
   "dependencies": {
     "electron-updater": "6.8.9"
@@ -21,5 +24,57 @@
     "electron": "44.4.1",
     "electron-builder": "26.15.3",
     "esbuild": "0.28.2"
+  },
+  "build": {
+    "appId": "io.github.hwmp.happywheelsmultiplayer",
+    "productName": "Happy Wheels Multiplayer",
+    "copyright": "Unofficial fan-made mod. Happy Wheels is a trademark of Fancy Force; this project is not affiliated with them.",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "package.json",
+      "src/main/**",
+      "!src/main/devBridge.js",
+      "!src/main/localNet.js",
+      "src/preload/**",
+      "out/web/**"
+    ],
+    "asar": true,
+    "electronLanguages": [
+      "en-US"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "HappyWheelsMultiplayer-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Happy Wheels Multiplayer",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "REPLACE_WITH_GITHUB_USER",
+        "repo": "happywheels-multiplayer",
+        "releaseType": "release"
+      }
+    ]
   }
 }

@@ -11,9 +11,12 @@ export class Clock {
 
   now() { return performance.now() + this.offset; }
 
+  /**
+   * Called when joining a lobby or when the host changes. The offset is kept, so a new host that
+   * was synced to the old one continues the same timebase and in-flight race times stay valid.
+   */
   reset(isHost) {
     this.samples = [];
-    this.offset = 0;
     this.synced = !!isHost;
     this.rtt = 0;
   }

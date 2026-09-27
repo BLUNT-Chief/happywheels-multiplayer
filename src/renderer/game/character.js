@@ -3,6 +3,7 @@
 // A "layout" is an ordered list of property paths ("chestBody", "girl.head1Body", "elves.2.chestBody")
 // that resolve to Box2D bodies on a character. Two characters of the same class produce the
 // same layout, so body state can be streamed as a flat array.
+import { log } from '../log.js';
 
 import { libs } from '../hooks.js';
 
@@ -115,7 +116,7 @@ export function hookCharacterEvents(root, onEvent) {
         let r;
         try { r = prev.apply(this, args); } finally { depth--; }
         if (top && args.length <= 4 && args.every((a) => a === undefined || typeof a === 'number' || typeof a === 'boolean')) {
-          try { onEvent(path, name, args); } catch (e) { console.error('[hwmp] event hook', e); }
+          try { onEvent(path, name, args); } catch (e) { log.error('event hook', e); }
         }
         return r;
       };

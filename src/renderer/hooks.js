@@ -2,6 +2,8 @@
 // Library code (Box2D, PIXI) lives in dependencies.js and is not obfuscated, so we
 // identify classes by prototype shape instead of by (mangled) export names.
 
+import { log } from './log.js';
+
 const listeners = { world: [], preStep: [], postStep: [], render: [], libs: [] };
 export const libs = { b2World: null, b2Body: null, b2Shape: null, PIXI: {}, webpackRequire: null, modules: new Map() };
 export const state = { worlds: new Set(), stage: null, renderer: null, lastWorld: null };
@@ -12,7 +14,7 @@ export function on(evt, fn) {
 }
 function emit(evt, ...args) {
   for (const fn of listeners[evt]) {
-    try { fn(...args); } catch (e) { console.error(`[hwmp] ${evt} listener failed`, e); }
+    try { fn(...args); } catch (e) { log.error(`${evt} listener failed`, e); }
   }
 }
 

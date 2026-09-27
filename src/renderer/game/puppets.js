@@ -1,6 +1,7 @@
 // Remote players are rendered as "puppets": real game characters built with the game's own
 // classes, whose bodies are driven from network snapshots every frame. The game's own paint
 // code then draws them, vehicle, gore and all.
+import { log } from '../log.js';
 
 import { libs } from '../hooks.js';
 import { Game } from './locate.js';
@@ -211,7 +212,7 @@ class Puppet {
     try {
       target[method](...args.slice(0, 4));
     } catch (e) {
-      console.warn('[hwmp] puppet event failed', method, e);
+      log.warn('puppet event failed', method, e);
     }
     maps.forEach((m, i) => { for (const k of [...m.keys()]) if (!beforeListeners[i].has(k)) m.delete(k); });
     this.adoptNewBodies();

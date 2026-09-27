@@ -9,6 +9,7 @@ const { findGameDir } = require('./gameLocator');
 const { bootGame, APP_PREFIX, GAME_HOSTS } = require('./gameHost');
 const { SteamNet } = require('./steamNet');
 const { registerNetIpc } = require('./netIpc');
+const { initLog, log, captureWebContents } = require('./log');
 
 const IS_DEV_BUILD = !app.isPackaged;
 const DEV = IS_DEV_BUILD && process.argv.includes('--hwmp-dev');
@@ -28,6 +29,13 @@ function isTrustedSender(e) {
   }
 }
 
+/** Steam passes lobby invites as '+connect_lobby <id>' when it launches the game. */
+function lobbyFromArgv(argv) {
+  const i = argv.indexOf('+connect_lobby');
+  const id = i >= 0 ? String(argv[i + 1] || '') : '';
+  return /^\d{15,20}$/.test(id) ? id : null;
+}
+
 function fail(message) {
   app.whenReady().then(() => {
     dialog.showErrorBox(APP_TITLE, message);
@@ -44,6 +52,9 @@ function main() {
 
   const profile = ENV('HWMP_PROFILE');
   const userDataDir = path.join(app.getPath('appData'), profile ? `HappyWheelsMP-${profile}` : 'HappyWheelsMP');
+  initLog(path.join(userDataDir, 'logs'));
+  log.info(`[hwmp] ${APP_TITLE} ${MOD_VERSION} starting; game at ${gameDir}`);
+  process.on('uncaughtException', (e) => log.error('[hwmp] uncaught', e));
 
   // Transport: Steam lobbies + P2P (default) or the localhost relay for multi-instance testing.
   let transport = null;
@@ -56,6 +67,11 @@ function main() {
   registerNetIpc(() => transport, isTrustedSender);
 
   ipcMain.handle('hwmp:version', () => MOD_VERSION);
+  ipcMain.on('hwmp:log', (e, level, message) => {
+    if (!isTrustedSender(e)) return;
+    const fn = level === 'error' ? log.error : level === 'warn' ? log.warn : log.info;
+    fn(`[page] ${String(message).slice(0, 4000)}`);
+  });
   ipcMain.on('hwmp:devFlags', (e) => {
     e.returnValue = { dev: DEV, capture: DEV && ENV('HWMP_CAPTURE') === '1', modVersion: MOD_VERSION };
   });
@@ -92,13 +108,20 @@ function main() {
   });
 
   app.on('browser-window-created', (_e, win) => {
+    captureWebContents(win.webContents);
     win.setTitle(APP_TITLE);
     win.on('page-title-updated', (ev) => ev.preventDefault());
   });
   app.on('will-quit', () => steamNet.shutdown());
+  const launchLobby = lobbyFromArgv(process.argv);
+  if (launchLobby) steamNet.pendingInvite = launchLobby;
+  app.on('second-instance', (_e, argv) => {
+    const id = lobbyFromArgv(argv);
+    if (id) steamNet.emit('hwmp:lobby:inviteAccepted', id);
+  });
 
   if (app.isPackaged) {
-    app.whenReady().then(() => require('./updater').initUpdater({ isTrustedSender }));
+    app.whenReady().then(() => require('./updater').initUpdater({ isTrustedSender, log }));
   }
   if (!app.isPackaged) {
     // The updater only runs in installed builds; answer its IPC so the UI stays quiet in dev.

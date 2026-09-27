@@ -134,9 +134,9 @@ export function createOverlay(mp, bridge, tx) {
   function browserView() {
     const code = h('input', { type: 'text', placeholder: 'Lobby code', maxlength: 24 });
     const type = h('select', { onChange: (e) => mp.setLobbyType(e.target.value) },
-      h('option', { value: 'friends', selected: mp.prefs.lobbyType === 'friends' }, 'Friends only'),
-      h('option', { value: 'public', selected: mp.prefs.lobbyType === 'public' }, 'Public'),
-      h('option', { value: 'private', selected: mp.prefs.lobbyType === 'private' }, 'Invite / code only'));
+      h('option', { value: 'public', selected: mp.prefs.lobbyType === 'public' }, 'Listed (anyone can join)'),
+      h('option', { value: 'friends', selected: mp.prefs.lobbyType === 'friends' }, 'Friends (invite or code)'),
+      h('option', { value: 'private', selected: mp.prefs.lobbyType === 'private' }, 'Private (code only)'));
     const list = h('div', { class: 'list' });
     if (ui.loadingLobbies && !ui.lobbies) list.append(h('div', { class: 'empty' }, 'Looking for lobbies…'));
     else if (ui.lobbiesErr) list.append(h('div', { class: 'empty error' }, ui.lobbiesErr));
@@ -147,7 +147,7 @@ export function createOverlay(mp, bridge, tx) {
         list.append(h('div', { class: 'lobby-item' },
           h('div', null,
             h('div', { class: 'name' }, d.name || 'Race lobby'),
-            h('div', { class: 'small muted' }, `${d.level ? d.level : 'No level picked'} · ${d.phase === 'lobby' || !d.phase ? 'waiting' : 'racing'} · collisions ${d.collisions === '1' ? 'on' : 'off'}`)),
+            h('div', { class: 'small muted' }, `${d.level ? d.level : 'No level picked'} · ${d.phase === 'lobby' || !d.phase ? 'waiting' : 'racing'} · collisions ${d.collisions === '1' ? 'on' : 'off'}${d.game && d.game !== bridge.gameVersion() ? ` · game v${d.game}` : ''}`)),
           h('div', { class: 'small muted' }, `${l.members.length}${l.limit ? `/${l.limit}` : ''} players`),
           l.compatible
             ? h('button', { class: 'btn', disabled: ui.busy, onClick: () => act(() => mp.join(l.id)) }, 'Join')
@@ -188,7 +188,8 @@ export function createOverlay(mp, bridge, tx) {
       h('div', null,
         h('div', null, p.name, isHost ? h('span', { class: 'badge host' }, 'HOST') : null,
           p.status === 'lobby' && p.ready ? h('span', { class: 'badge ready' }, 'READY') : null,
-          p.id === mp.self.id ? h('span', { class: 'badge' }, 'you') : null),
+          p.id === mp.self.id ? h('span', { class: 'badge' }, 'you') : null,
+          p.gameVersion && p.gameVersion !== bridge.gameVersion() ? h('span', { class: 'badge', title: 'Their Happy Wheels version differs from yours; physics may not match. Update the game in Steam.' }, `game v${p.gameVersion}`) : null),
         h('div', { class: 'status' }, charName(p.character))),
       h('div', { class: 'status' }, statusText));
   }
@@ -283,7 +284,7 @@ export function createOverlay(mp, bridge, tx) {
                   h('button', { class: 'btn ghost', onClick: () => { navigator.clipboard?.writeText(lobbyCode(mp.lobby.id)); toast('Lobby code copied'); } }, 'Copy'))),
               players,
               h('div', { class: 'row' },
-                h('button', { class: 'btn', onClick: () => mp.invite() }, 'Invite Steam friends'),
+                h('button', { class: 'btn', onClick: () => { mp.invite(); toast('If the Steam invite window does not open, send your friends the lobby code instead.'); } }, 'Invite Steam friends'),
                 h('button', { class: 'btn ghost', onClick: () => act(() => mp.leave()) }, 'Leave lobby'))),
             h('div', { class: 'card stack' }, h('div', { class: 'label' }, 'Chat'), chatLog, h('div', { class: 'row' }, chatIn))),
           h('div', { class: 'stack' },
