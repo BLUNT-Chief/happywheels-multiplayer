@@ -1,7 +1,7 @@
 // High-level control of the game for the race logic: load a level by id, freeze everyone at the
 // start line, detect restarts / finishes, and keep remote puppets in sync with the local world.
-import { log } from '../log.js';
 
+import { log } from '../log.js';
 import { on as onHook, state as hookState } from '../hooks.js';
 import { Game } from './locate.js';
 import { computeLayout, hookCharacterEvents, characterTree, bodiesOf } from './character.js';
@@ -64,7 +64,7 @@ export const bridge = {
       };
       this.pendingLoad = p;
       try {
-        if (app.sessionController) app.sessionController.returnToMainMenu();
+        leaveSessionController(app);
         wrapLevelLoadComplete(app);
         app.openDeepLink({ kind: 'level', id: p.levelId });
         if (app.mainMenu) { // a popup blocked the deep link; go around it
@@ -80,7 +80,7 @@ export const bridge = {
 
   returnToMenu() {
     const app = Game.app;
-    if (app && app.sessionController) app.sessionController.returnToMainMenu();
+    if (app) leaveSessionController(app);
   },
 
   restart() {
@@ -192,7 +192,20 @@ function installContactFilter(session) {
   world.__hwmpFilter = true;
 }
 
-let levelLoadWrapped = new WeakSet();
+/** Back to the main menu from anywhere in a level: playing, paused, character select or loading. */
+function leaveSessionController(app) {
+  const ctl = app.sessionController;
+  if (!ctl) return;
+  if (ctl.session) { ctl.returnToMainMenu(); return; }
+  // No session yet (character menu or level still loading): abandon the controller so a load that
+  // finishes later can't start a session on it (see the beginSession wrapper).
+  ctl.__hwmpAbandoned = true;
+  try { if (ctl.characterMenu) ctl.closeCharacterMenu(); } catch {}
+  try { ctl.loadContainer.hide(); } catch {}
+  app.closeSessionController();
+}
+
+const levelLoadWrapped = new WeakSet();
 function wrapLevelLoadComplete(app) {
   if (levelLoadWrapped.has(app) || typeof app.levelLoadCompleteBind !== 'function') return;
   levelLoadWrapped.add(app);
@@ -246,8 +259,7 @@ function installGameHooks() {
     const p = bridge.pendingLoad;
     if (p && !this.replayDataObject && this.levelDataObject && Number(this.levelDataObject.id) === p.levelId) {
       const S = Game.Settings;
-      S.hideVehicle = false;
-      if (!this.levelDataObject.forceChar) S.characterIndex = p.characterIndex;
+      if (!this.levelDataObject.forceChar) { S.hideVehicle = false; S.characterIndex = p.characterIndex; }
       this.incrementPlays = true;
       return this.loadSession();
     }
@@ -259,6 +271,10 @@ function installGameHooks() {
       try { this.session.removeEventListener(a[0]?.type, this.sessionCompleteHandlerBind); } catch {}
       return undefined;
     }
+    return orig.apply(this, a);
+  });
+  wrap(CtlP, 'beginSession', (orig) => function (...a) {
+    if (this.__hwmpAbandoned) return undefined;
     return orig.apply(this, a);
   });
   wrap(CtlP, 'returnToMainMenu', (orig) => function (...a) {
@@ -322,7 +338,9 @@ function onSessionStart(session) {
   if (!ch.__hwmpHooked) {
     ch.__hwmpHooked = true;
     hookCharacterEvents(ch, (path, method, args) => {
-      markLocalShapes(session);
+      // Breaks can create new body parts; the character object outlives restarts, so use the
+      // current session rather than the one this hook was installed in.
+      if (bridge.session) markLocalShapes(bridge.session);
       emit('localEvent', path, method, args);
     });
   }

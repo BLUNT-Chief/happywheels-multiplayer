@@ -1,15 +1,14 @@
 // Remote players are rendered as "puppets": real game characters built with the game's own
 // classes, whose bodies are driven from network snapshots every frame. The game's own paint
 // code then draws them, vehicle, gore and all.
-import { log } from '../log.js';
 
+import { log } from '../log.js';
 import { libs } from '../hooks.js';
 import { Game } from './locate.js';
 import { computeLayout, resolvePath, isEventMethod } from './character.js';
 
 const INTERP_DELAY_MS = 100;
 const MAX_SNAPSHOTS = 40;
-const GHOST_ALPHA = 0.45;
 
 function buildCharacterData(session, characterIndex) {
   const CL = Game.ContentLoader;
@@ -104,7 +103,7 @@ class Puppet {
     this.layout = layout;
     this.refreshSlots();
     this.setAlpha(this.alpha);
-    ch.paint();
+    this.paint();
   }
 
   trackBody(b) {
