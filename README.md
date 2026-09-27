@@ -3,7 +3,7 @@
 Race your friends in Happy Wheels. Everyone joins a lobby, the host picks a level, and you all start from the same line on a synced countdown. Other racers show up in your game as real Happy Wheels characters, so every crash, lost limb and flying head is mirrored live.
 
 - **Lobbies over Steam.** Create a lobby, invite friends or share a lobby code. There's no server to run: traffic goes peer-to-peer through Steam's relay network.
-- **Any level.** Pick one of the 140+ featured levels or type the ID of any user level.
+- **Any level.** A level browser with the 140+ featured levels and every player-made level on totaljerkface.com: search by name or author, sort by rating, plays or date, and see details before you pick. Or type a level ID.
 - **Collisions on or off.** Off (the default): other racers are see-through ghosts you pass through. On: you can bump each other. Racers start out passable and turn solid once you've separated, so a shared start line doesn't send everyone flying.
 - **Every character** works: wheelchair guy, segway guy, irresponsible dad (with kid), moped couple, Santa and his elves, and the rest.
 - **Automatic updates.** The mod updates itself in the background.
@@ -21,16 +21,16 @@ Race your friends in Happy Wheels. Everyone joins a lobby, the host picks a leve
 
 When it starts, a small launcher window checks for updates, finds your Happy Wheels install, links Steam's Play button (below) and checks Steam, then opens the game. If something is wrong (Steam closed, game not installed, the regular Happy Wheels already open) it tells you and offers a button to fix it.
 
-It installs just for your Windows user (no admin rights needed), keeps its own save profile, and never modifies the Happy Wheels install.
+It installs just for your Windows user (no admin rights needed) and never modifies the Happy Wheels install. It uses the same settings as the regular game (controls, options, fullscreen, login), so nothing resets.
 
 ## Playing
 
 Open **Happy Wheels Multiplayer**. It looks like the normal game, plus a **MULTIPLAYER** button in the top-right corner (or press **F2**).
 
 **Host a race**
-1. Click **Create lobby**. Choose whether it's listed publicly, friends only (invite or code) or private (code only).
+1. Click **Create lobby**. Choose whether it's listed publicly, friends only (not listed) or private (Steam invite only).
 2. Click **Invite Steam friends**, or click **Copy** next to the lobby code and send it to them.
-3. Pick a level, choose whether players collide, and optionally force everyone onto the same character.
+3. Click **Choose level…**: browse **Featured** or **Player levels** (search, sort, pages), or enter a **Level ID**. Then choose whether players collide, and optionally force everyone onto the same character.
 4. Click **Start race**. Everyone loads the level and waits at the start line, then the countdown runs and it's GO.
 
 **Join a race**: pick a lobby from the list, or paste a lobby code and click **Join by code**. Choose your character and click **I'm ready**.
@@ -57,7 +57,9 @@ The timer and standings are at the top. When the first racer finishes, everyone 
 - **"Other version"** next to a lobby: one of you is on an older mod version. Restart the mod to finish updating.
 - **A "game v…" badge** next to a player: their Happy Wheels version differs from yours. Update the game in Steam; different versions can have different physics.
 - **"Multiplayer could not start with this version of Happy Wheels"**: a game update changed something the mod relies on. The game still works normally, and a mod update will fix it.
-- **Logs**: `%APPDATA%\HappyWheelsMP\logs\hwmp.log`. Please attach this file to bug reports.
+- **No desktop shortcut?** Open MULTIPLAYER and click **Create desktop shortcut** (the launcher also offers one if you skip Steam's Play button).
+- **Chat** is in the lobby panel (Enter sends). Messages that arrive while the panel is closed pop up at the bottom of the screen.
+- **Logs**: `%APPDATA%\HappyWheelsMP\logs\hwmp.log`. Please attach this file to bug reports, from everyone involved.
 
 ---
 

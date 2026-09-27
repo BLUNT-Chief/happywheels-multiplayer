@@ -206,7 +206,7 @@ export class Multiplayer {
   // ---- host actions ---------------------------------------------------------------------------
   setLevel(level) {
     if (!this.isHost) return;
-    this.settings.level = level && V.int(level.id, 1, 2e9) ? { id: level.id, name: cleanText(level.name || `Level ${level.id}`, 80), character: level.character | 0, forceChar: !!level.forceChar } : null;
+    this.settings.level = level && V.int(level.id, 1, 2e9) ? { id: level.id, name: cleanText(level.name || `Level ${level.id}`, 80), author: cleanText(level.author || '', 40), character: level.character | 0, forceChar: !!level.forceChar } : null;
     this.broadcastLobby(); this.changed();
   }
   setCollisions(on) { if (!this.isHost) return; this.settings.collisions = !!on; this.prefs.collisions = !!on; savePrefs(this.prefs); this.broadcastLobby(); this.changed(); }
@@ -351,6 +351,7 @@ export class Multiplayer {
   addChat(id, text) {
     const p = this.players.get(id);
     this.chat.push({ name: p ? p.name : 'Player', text, at: Date.now() });
+    if (id !== this.self.id) for (const fn of this.listeners) { try { fn(this, { chat: { name: p ? p.name : 'Player', text } }); } catch {} }
     if (this.chat.length > 100) this.chat.shift();
     this.changed();
   }
@@ -524,6 +525,7 @@ export class Multiplayer {
         if (V.bool(m.ready)) p.ready = m.ready;
         const isNew = !player;
         this.players.set(from, p);
+        if (isNew) log.info(`hello from ${p.name} (${from}), mod ${p.modVersion || '?'}, game ${p.gameVersion || '?'}`);
         if (isNew) {
           this.toast(`${p.name} joined`);
           this.sendTo(from, this.helloMsg());
@@ -650,7 +652,7 @@ export class Multiplayer {
     if (m.settings && typeof m.settings === 'object') {
       const s = m.settings;
       this.settings = {
-        level: s.level && V.int(s.level.id, 1, 2e9) ? { id: s.level.id, name: cleanText(s.level.name, 80), character: V.int(s.level.character, 0, 11) ? s.level.character : 0, forceChar: !!s.level.forceChar } : null,
+        level: s.level && V.int(s.level.id, 1, 2e9) ? { id: s.level.id, name: cleanText(s.level.name, 80), author: cleanText(s.level.author || '', 40), character: V.int(s.level.character, 0, 11) ? s.level.character : 0, forceChar: !!s.level.forceChar } : null,
         collisions: !!s.collisions,
         forceCharacter: V.int(s.forceCharacter, 0, 11) ? s.forceCharacter : 0,
         graceSec: V.int(s.graceSec, 10, 600) ? s.graceSec : 45,

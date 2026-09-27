@@ -41,18 +41,42 @@ export const bridge = {
 
   gameVersion() { return String(Game.Settings?.CURRENT_VERSION_STRING || ''); },
 
-  /** Featured levels from the game's own list (fetched once per launch). */
+  /** Featured levels from the game's own list (fetched once per launch; failures retry). */
   featuredLevels() {
     if (!this.featuredPromise) {
       const F = Game.FeaturedLevels;
-      if (!F) return Promise.resolve([]);
+      if (!F) return Promise.reject(new Error('The game is still starting, try again in a moment'));
       this.featuredPromise = Promise.resolve(F.featuredLevels()).then((list) => {
         if (!list || !list.length) throw new Error('The featured level list is unavailable (offline?)');
-        return list.map((l) => ({ id: Number(l.id), name: String(l.name || ''), author: String(l.author_name || ''), character: Number(l.character) || 0, forceChar: !!l.forceChar }));
+        return list.map(levelInfo);
       });
-      this.featuredPromise.catch(() => { this.featuredPromise = null; }); // retry next time
+      this.featuredPromise.catch(() => { this.featuredPromise = null; });
     }
     return this.featuredPromise;
+  },
+
+  /**
+   * Player-made levels from totaljerkface.com, same query as the game's level browser.
+   * mode: 'all' | 'name' | 'author'; sort: 'rating' | 'plays' | 'newest' | 'oldest';
+   * uploaded: 'today' | 'week' | 'month' | 'anytime'. Returns { levels, pages }.
+   */
+  async playerLevels({ mode = 'all', sort = 'rating', uploaded = 'anytime', page = 1, term = '' } = {}) {
+    const form = new URLSearchParams();
+    form.set('action', mode === 'name' ? 'search_by_name' : mode === 'author' ? 'search_by_user' : 'get_all');
+    form.set('page', String(Math.max(1, page | 0)));
+    form.set('sortby', sort);
+    form.set('uploaded', uploaded);
+    if (mode !== 'all') form.set('sterm', String(term).slice(0, 60));
+    return queryLevels(form);
+  },
+
+  /** One level's details by id, or null if it doesn't exist. */
+  async levelById(id) {
+    const form = new URLSearchParams();
+    form.set('action', 'get_level');
+    form.set('level_id', String(id | 0));
+    const { levels } = await queryLevels(form);
+    return levels[0] || null;
   },
 
   /** Leaves whatever the player is doing and loads `levelId`; resolves once the session starts. */
@@ -170,6 +194,44 @@ export const bridge = {
 };
 
 // ---- hooks into game classes -------------------------------------------------------------------
+
+/** POSTs to the level server like the game's browser does and parses its XML answer. */
+async function queryLevels(form) {
+  const base = (Game.Settings && Game.Settings.siteURL) || 'https://totaljerkface.com/';
+  // A string body: the game's request forwarding can't stream form objects.
+  const res = await fetch(`${base}get_level.hw`, { method: 'POST', body: form.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  if (!res.ok) throw new Error(`The level server answered ${res.status}`);
+  const text = await res.text();
+  if (text.slice(0, 8).includes('failure')) {
+    if (text.includes('not_found') || text.includes('no_level')) return { levels: [], pages: 1 };
+    throw new Error('The level server could not run that search');
+  }
+  const doc = new DOMParser().parseFromString(text, 'text/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('Unexpected answer from the level server');
+  const root = doc.documentElement;
+  const LD = Game.LevelData;
+  const levels = [...doc.getElementsByTagName('lv')].map((n) => {
+    const a = (k) => n.getAttribute(k);
+    const uc = n.getElementsByTagName('uc')[0];
+    const comments = uc ? uc.textContent : '';
+    if (LD) {
+      try { return levelInfo(new LD(a('id'), a('ln'), a('ui'), a('un'), a('rg'), a('vs'), a('ps'), a('dp'), comments, a('pc'), 1, 1, 1, a('dp'))); } catch {}
+    }
+    return { id: Number(a('id')), name: String(a('ln') || ''), author: String(a('un') || ''), character: Number(a('pc')) || 0, forceChar: Number(a('pc')) > 0, rating: 0, votes: Number(a('vs')) || 0, plays: Number(a('ps')) || 0, comments: '', created: 0 };
+  }).filter((l) => l.id > 0);
+  return { levels, pages: Math.max(1, Number(root.getAttribute('pp')) || 1) };
+}
+
+/** Plain summary of the game's level record. */
+function levelInfo(l) {
+  const created = l.created instanceof Date && !Number.isNaN(l.created.getTime()) ? l.created.getTime() : 0;
+  return {
+    id: Number(l.id), name: String(l.name || ''), author: String(l.author_name || ''),
+    character: Number(l.character) || 0, forceChar: !!l.forceChar,
+    rating: Number(l.average_rating) || 0, votes: Number(l.votes) || 0, plays: Number(l.plays) || 0,
+    comments: String(l.comments || '').slice(0, 400), created,
+  };
+}
 
 function isRaceEligible(session) {
   return session && !session.isReplay && !session.isMenu && !session.isEditorTest;

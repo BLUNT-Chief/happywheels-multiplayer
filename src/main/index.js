@@ -6,7 +6,7 @@
 
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { app, dialog, ipcMain, shell, BrowserWindow } = require('electron');
+const { app, dialog, ipcMain, shell, clipboard, BrowserWindow } = require('electron');
 const { findGameDir, isGameDir } = require('./gameLocator');
 const { bootGame, APP_PREFIX, GAME_HOSTS } = require('./gameHost');
 const { SteamNet } = require('./steamNet');
@@ -54,14 +54,25 @@ function vanillaRunningSync() {
 }
 
 /**
- * The game takes a single-instance lock on its own profile folder. Take it up front (restoring our
- * profile path afterwards) so a second copy of the mod quits quietly and hands focus to the first.
+ * The game takes a single-instance lock on its profile folder. Take it up front so a second copy of
+ * the mod quits quietly and hands focus to the first.
  */
-function acquireGameLock(userDataDir) {
-  app.setPath('userData', path.join(app.getPath('appData'), 'HappyWheels'));
-  const got = app.requestSingleInstanceLock();
-  app.setPath('userData', userDataDir);
-  return got;
+function acquireGameLock(profileDir) {
+  app.setPath('userData', profileDir);
+  return app.requestSingleInstanceLock();
+}
+
+/** Desktop shortcut for players who don't start the game from Steam. */
+function desktopShortcutPath() { return path.join(app.getPath('desktop'), `${APP_TITLE}.lnk`); }
+function createDesktopShortcut() {
+  if (process.platform !== 'win32') return false;
+  return shell.writeShortcutLink(desktopShortcutPath(), 'create', {
+    target: process.execPath,
+    cwd: path.dirname(process.execPath),
+    description: 'Race your friends in Happy Wheels',
+    icon: process.execPath,
+    iconIndex: 0,
+  });
 }
 
 /**
@@ -98,9 +109,15 @@ async function uninstallCleanup() {
 function main() {
   if (process.argv.includes('--hwmp-uninstall')) { uninstallCleanup(); return; }
   const profile = ENV('HWMP_PROFILE');
+  // Mod files (logs, launcher settings) live in HappyWheelsMP. The browser profile is the regular
+  // game's own, so options, fullscreen, login and downloaded levels are shared with it (the two can
+  // never run at the same time: they hold the same lock). Dev test instances keep separate profiles.
   const userDataDir = path.join(app.getPath('appData'), profile ? `HappyWheelsMP-${profile}` : 'HappyWheelsMP');
-  app.setPath('userData', userDataDir); // before 'ready', so our browser profile is separate from the game's
+  const profileDir = profile ? userDataDir : path.join(app.getPath('appData'), 'HappyWheels');
+  app.setPath('userData', profileDir); // before 'ready'
   initLog(path.join(userDataDir, 'logs'));
+  // Quitting must always end the process, even if Steam or the overlay hangs during shutdown.
+  app.on('before-quit', () => setTimeout(() => { log.warn('[hwmp] forced exit after quit timeout'); app.exit(0); }, 6000).unref());
   log.info(`[hwmp] ${APP_TITLE} ${MOD_VERSION} starting`);
   process.on('uncaughtException', (e) => log.error('[hwmp] uncaught', e));
 
@@ -108,7 +125,7 @@ function main() {
   // If the regular game is open, the launcher explains that instead of the lock failing silently.
   let haveLock = multi;
   if (!multi && !vanillaRunningSync()) {
-    haveLock = acquireGameLock(userDataDir);
+    haveLock = acquireGameLock(profileDir);
     if (!haveLock) { app.quit(); return; } // another copy of the mod is already running
   }
 
@@ -123,6 +140,12 @@ function main() {
   registerNetIpc(() => transport, isTrustedSender);
 
   ipcMain.handle('hwmp:version', () => MOD_VERSION);
+  ipcMain.on('hwmp:copyText', (e, text) => { if (isTrustedSender(e)) clipboard.writeText(String(text).slice(0, 1000)); });
+  ipcMain.handle('hwmp:desktopShortcut', (e, create) => {
+    if (!isTrustedSender(e)) return null;
+    if (create) { try { createDesktopShortcut(); } catch (err) { log.warn('[hwmp] shortcut failed', err); } }
+    return require('node:fs').existsSync(desktopShortcutPath());
+  });
   // Steam launch option that makes Steam start the mod instead of the vanilla game (overlay + invites).
   ipcMain.handle('hwmp:steamLaunchOption', (e) => (isTrustedSender(e) ? `"${process.execPath}" %command%` : null));
   ipcMain.on('hwmp:log', (e, level, message) => {
@@ -192,7 +215,7 @@ function main() {
     global.__hwmpSteam = () => steamNet.client;
   }
 
-  app.whenReady().then(() => launch({ userDataDir, updater, steamNet, haveLock, setTransport: (t) => { if (!transport) transport = t; } }))
+  app.whenReady().then(() => launch({ userDataDir, profileDir, updater, steamNet, haveLock, setTransport: (t) => { if (!transport) transport = t; } }))
     .catch((e) => {
       log.error('[hwmp] launch failed', e);
       dialog.showErrorBox(APP_TITLE, `Something went wrong while starting:\n\n${e && e.message}\n\nLog file: ${log.file || 'unavailable'}`);
@@ -232,8 +255,13 @@ async function linkSteamPlayButton(ui, settings, userDataDir) {
     actions: [{ id: 'yes', label: running ? 'Set it up (restarts Steam)' : 'Set it up', primary: true }, { id: 'later', label: 'Not now' }, { id: 'never', label: "Don't ask again" }],
   });
   if (a === 'quit') { app.quit(); return; }
-  if (a === 'never') { settings.steamLink = 'never'; preflight.saveSettings(userDataDir, settings); ui.step('link', 'done', 'Turned off'); return; }
-  if (a !== 'yes') { ui.step('link', 'done', 'Not set up (you will be asked next time)'); return; }
+  if (a === 'never' || a === 'later') {
+    if (a === 'never') { settings.steamLink = 'never'; preflight.saveSettings(userDataDir, settings); }
+    ui.step('link', 'done', a === 'never' ? 'Turned off' : 'Not set up (you will be asked next time)');
+    await offerDesktopShortcut(ui);
+    return;
+  }
+  if (a !== 'yes') return;
   if (running) {
     ui.step('link', 'active', 'Closing Steam…');
     if (!(await steamLaunch.shutdownSteam())) { ui.step('link', 'warn', 'Steam did not close; try again next time'); return; }
@@ -242,7 +270,20 @@ async function linkSteamPlayButton(ui, settings, userDataDir) {
   if (running) { ui.step('link', 'done', 'Linked. Starting Steam again…'); steamLaunch.startSteam(); }
 }
 
-async function launch({ userDataDir, updater, steamNet, haveLock, setTransport }) {
+/** Players who skip the Steam Play button get offered a desktop shortcut instead (if missing). */
+async function offerDesktopShortcut(ui) {
+  if (process.platform !== 'win32' || require('node:fs').existsSync(desktopShortcutPath())) return;
+  const a = await ui.ask({
+    kind: 'info',
+    title: 'Add a desktop shortcut?',
+    text: 'Start Happy Wheels Multiplayer from your desktop instead of Steam.',
+    actions: [{ id: 'yes', label: 'Create desktop shortcut', primary: true }, { id: 'no', label: 'No thanks' }],
+  });
+  if (a === 'quit') { app.quit(); return; }
+  if (a === 'yes') { try { createDesktopShortcut(); ui.step('link', 'done', 'Desktop shortcut created'); } catch (e) { log.warn('[hwmp] shortcut failed', e); } }
+}
+
+async function launch({ userDataDir, profileDir, updater, steamNet, haveLock, setTransport }) {
   const ui = new Launcher({ version: MOD_VERSION });
   await ui.open();
   const settings = preflight.loadSettings(userDataDir);
@@ -260,7 +301,7 @@ async function launch({ userDataDir, updater, steamNet, haveLock, setTransport }
           ui.progress(s.percent || 0);
           if (!ui.state.message) {
             ui.ask({ kind: 'info', title: 'Updating', text: 'A new version is downloading. It will install and restart automatically.', actions: [{ id: 'skip', label: 'Play now, update later' }] })
-              .then((a) => { if (a === 'skip') skipResolve(); });
+              .then((a) => { if (a === 'skip') skipResolve(); else if (a === 'quit') app.quit(); });
           }
         }
       },
@@ -316,7 +357,7 @@ async function launch({ userDataDir, updater, steamNet, haveLock, setTransport }
     });
     if (a === 'quit') { app.quit(); return; }
   }
-  if (!haveLock && !acquireGameLock(userDataDir)) { app.quit(); return; }
+  if (!haveLock && !acquireGameLock(profileDir)) { app.quit(); return; }
   ui.step('game', 'done', gameDir);
 
   // Make Steam's Play button for Happy Wheels open the mod (installed builds only).
@@ -365,7 +406,7 @@ async function launch({ userDataDir, updater, steamNet, haveLock, setTransport }
     gameDir,
     modWebDir: path.join(ROOT, 'out', 'web'),
     preloadPath: path.join(ROOT, 'src', 'preload', 'preload.js'),
-    userDataDir,
+    userDataDir: profileDir,
     noSteam: ENV('HWMP_NO_STEAM') === '1',
     onSteamClient: (client) => {
       steamNet.attach(client);

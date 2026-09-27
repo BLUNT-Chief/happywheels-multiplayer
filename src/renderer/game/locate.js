@@ -51,6 +51,8 @@ export const Game = {
   get SessionController() { return findClass('SessionController', ['restartLevel', 'returnToMainMenu', 'beginSession', 'loadSession']); },
   /** Loads level + character art; we reuse it to build art for remote players' characters. */
   get ContentLoader() { return findClass('ContentLoader', ['loadCharacterData', 'dataLoaded', 'characterData']); },
+  /** The game's level record (decodes names, ratings, forced character like the game does). */
+  get LevelData() { return findClass('LevelData', ['getAverageRating', 'dateFromString', 'forceChar']); },
   get CharacterBase() { return findClass('CharacterBase', ['trackDeath', 'checkKeyStates', 'checkReplayData', 'addKeyListeners']); },
   /** Module object that App.init decorates with featuredLevels(). */
   get FeaturedLevels() {

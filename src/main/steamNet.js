@@ -184,11 +184,20 @@ class SteamNet {
     let sent = 0;
     for (const t of targets) {
       if (!this.members.has(t)) continue;
-      try {
-        if (this.client.networking.sendP2PPacket(BigInt(t), type, buf)) { sent++; this.stats.tx++; this.stats.txBytes += buf.length; }
-      } catch {}
+      let ok = false;
+      try { ok = this.client.networking.sendP2PPacket(BigInt(t), type, buf); } catch {}
+      if (ok) { sent++; this.stats.tx++; this.stats.txBytes += buf.length; } else this.logSendFailure(t, type);
     }
     return sent;
+  }
+
+  /** At most one line per peer every 10s, so a dead connection can't flood the log. */
+  logSendFailure(peer, type) {
+    this.sendFailLog ||= new Map();
+    const now = Date.now();
+    if (now - (this.sendFailLog.get(peer) || 0) < 10000) return;
+    this.sendFailLog.set(peer, now);
+    log.warn(`[hwmp] Steam refused to send a ${type === SendType.Reliable ? 'reliable' : 'fast'} packet to ${peer}`);
   }
 
   poll() {

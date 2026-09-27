@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('hwmp', {
   modVersion: flags.modVersion || '',
   version: () => ipcRenderer.invoke('hwmp:version'),
   steamLaunchOption: () => ipcRenderer.invoke('hwmp:steamLaunchOption'),
+  copyText: (text) => ipcRenderer.send('hwmp:copyText', String(text)),
+  desktopShortcut: (create) => ipcRenderer.invoke('hwmp:desktopShortcut', !!create),
   log: (level, message) => ipcRenderer.send('hwmp:log', String(level), String(message).slice(0, 4000)),
   self: () => ipcRenderer.invoke('hwmp:self'),
   avatar: (id) => ipcRenderer.invoke('hwmp:avatar', String(id)),

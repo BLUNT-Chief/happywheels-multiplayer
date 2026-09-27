@@ -1,19 +1,25 @@
-// DOM overlay (inside a shadow root) for the lobby browser, lobby room and race HUD.
+// DOM overlay (inside a shadow root) for the lobby browser, lobby room, level browser and race HUD.
 // All player-supplied text is inserted as text nodes, never as HTML.
 
 import css from './styles.css';
 import { fmtTime } from '../net/race.js';
 import { log } from '../log.js';
 
+// Tiny element builder. Extra props: key (stable id used to keep focus/scroll across redraws) and
+// onEnter (run when Enter is pressed in a text box).
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
+    else if (k === 'key') el.dataset.key = v;
+    else if (k === 'onEnter') el.__onEnter = v;
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'style') el.setAttribute('style', v);
-    else if (k === 'value' || k === 'checked' || k === 'disabled' || k === 'selected') el[k] = v;
-    else el.setAttribute(k, v === true ? '' : String(v));
+    else if (k === 'value' || k === 'checked' || k === 'disabled' || k === 'selected') {
+      el[k] = v;
+      el.setAttribute(k, v === true ? '' : String(v)); // mirrored so redraws can be compared as HTML
+    } else el.setAttribute(k, v === true ? '' : String(v));
   }
   for (const c of kids.flat(Infinity)) if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
   return el;
@@ -28,6 +34,8 @@ const parseCode = (code) => {
   for (const ch of c.toLowerCase()) n = n * 36n + BigInt(parseInt(ch, 36));
   return n.toString();
 };
+const stars = (r) => (r > 0 ? `★ ${r.toFixed(1)}` : '');
+const fmtNum = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n || 0));
 
 export function createOverlay(mp, bridge, tx) {
   const host = h('div', { id: 'hwmp-overlay' });
@@ -48,39 +56,60 @@ export function createOverlay(mp, bridge, tx) {
   const tags = h('div');
   const panelLayer = h('div');
   const resultsLayer = h('div');
+  const raceMenuLayer = h('div');
   const toasts = h('div', { class: 'toasts' });
   const updateBox = h('div');
   const tipLayer = h('div');
-  const raceMenuLayer = h('div');
   const pill = h('button', { class: 'pill', title: 'Multiplayer (F2)', onClick: () => toggle() });
   scaled.append(hud, resultsLayer, raceMenuLayer, panelLayer, toasts, updateBox, tipLayer, pill);
   root.append(tags, scaled);
   (document.body || document.documentElement).append(host);
 
-  const ui = { open: false, view: null, featured: null, featuredErr: null, levelFilter: '', lobbies: null, lobbiesErr: null, loadingLobbies: false, resultsHidden: false, busy: false };
+  const ui = {
+    open: false,
+    view: 'main', // main | levels
+    inputs: {},   // text typed into boxes, by key (survives redraws)
+    busy: false,
+    lobbies: null, lobbiesErr: null, loadingLobbies: false,
+    featured: null, featuredErr: null,
+    levelTab: 'featured', featuredChar: 0,
+    player: { mode: 'all', sort: 'rating', uploaded: 'anytime', page: 1, pages: 1, results: null, loading: false, error: null },
+    idLookup: { loading: false, error: null },
+    selected: null,
+    resultsHidden: false,
+    shortcut: null,
+  };
   const avatars = new Map();
   const charNames = () => { const n = bridge.characterNames(); return n.length ? n : Array.from({ length: 11 }, (_, i) => `Character ${i + 1}`); };
   const charName = (i) => (i ? (charNames()[i - 1] || `Character ${i}`) : 'Players choose');
-  const isTyping = () => { const a = shadow.activeElement; return !!a && (a.tagName === 'INPUT' || a.tagName === 'SELECT' || a.tagName === 'TEXTAREA'); };
+  const activeInput = () => { const a = shadow.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'SELECT' || a.tagName === 'TEXTAREA') ? a : null; };
 
-  // Clicking our buttons must not take keyboard focus from the game: a focused button would be
-  // 'clicked' again by Space/Enter, which are Happy Wheels controls.
-  shadow.addEventListener('mousedown', (e) => {
-    const t = e.target;
-    if (t instanceof Element && t.closest('button, .level')) e.preventDefault();
-  }, true);
-
-  // Keep game hotkeys away from our text fields, and add ours (F2 panel, R restart).
+  // Keys typed into our boxes must not drive the game, but the boxes themselves still need them:
+  // this listener runs first (capture on window), handles Enter/Escape for the focused box, and
+  // stops the event before the game's listeners. Typing itself is the browser's default action.
   window.addEventListener('keydown', (e) => {
-    if (isTyping()) { e.stopImmediatePropagation(); if (e.key === 'Escape') shadow.activeElement.blur(); return; }
+    const a = activeInput();
+    if (a) {
+      if (e.key === 'Enter' && a.__onEnter) { e.preventDefault(); a.__onEnter(); }
+      else if (e.key === 'Escape') a.blur();
+      e.stopImmediatePropagation();
+      return;
+    }
     if (e.key === 'F2') { e.preventDefault(); e.stopImmediatePropagation(); toggle(); return; }
-    if (ui.open && e.key === 'Escape') { e.stopImmediatePropagation(); toggle(false); return; }
+    if (ui.open && e.key === 'Escape') { e.stopImmediatePropagation(); if (ui.view !== 'main') { ui.view = 'main'; render(); } else toggle(false); return; }
     if ((e.key === 'r' || e.key === 'R') && !e.repeat && mp.race && bridge.session && (mp.phase === 'racing' || mp.phase === 'results') && !bridge.frozen) {
       e.stopImmediatePropagation();
       bridge.restart();
     }
   }, true);
-  window.addEventListener('keyup', (e) => { if (isTyping()) e.stopImmediatePropagation(); }, true);
+  for (const type of ['keyup', 'keypress']) window.addEventListener(type, (e) => { if (activeInput()) e.stopImmediatePropagation(); }, true);
+
+  // Clicking our buttons must not take keyboard focus from the game: a focused button would be
+  // 'clicked' again by Space/Enter, which are Happy Wheels controls.
+  shadow.addEventListener('mousedown', (e) => {
+    const t = e.target;
+    if (t instanceof Element && t.closest('button, .lvrow, .level')) e.preventDefault();
+  }, true);
 
   // First-run pointer at the MULTIPLAYER button, shown until the player has opened the panel once.
   const TIP_KEY = 'hwmp.tipSeen';
@@ -102,8 +131,9 @@ export function createOverlay(mp, bridge, tx) {
     if (v !== ui.open) log.info(`panel ${v ? 'opened' : 'closed'}`);
     ui.open = v;
     if (v) markTipSeen();
-    if (!v && shadow.activeElement) shadow.activeElement.blur();
+    if (!v) { ui.view = 'main'; if (shadow.activeElement) shadow.activeElement.blur(); }
     if (ui.open && !mp.lobby) refreshLobbies();
+    if (ui.open && ui.shortcut === null) tx.desktopShortcut?.(false).then((x) => { ui.shortcut = x; render(); }).catch(() => {});
     render();
   }
 
@@ -112,6 +142,10 @@ export function createOverlay(mp, bridge, tx) {
     toasts.append(t);
     setTimeout(() => t.remove(), 4200);
     while (toasts.children.length > 4) toasts.firstChild.remove();
+  }
+
+  function copy(text, what) {
+    try { tx.copyText(text); toast(`${what} copied`); } catch { toast('Could not copy', 'error'); }
   }
 
   async function act(fn) {
@@ -133,6 +167,32 @@ export function createOverlay(mp, bridge, tx) {
     render();
   }
 
+  async function loadPlayerLevels(page = 1) {
+    const p = ui.player;
+    const term = (ui.inputs.psearch || '').trim();
+    if (p.mode !== 'all' && !term) { p.error = p.mode === 'name' ? 'Type part of a level name' : 'Type an author name'; render(); return; }
+    p.loading = true; p.error = null; p.page = page; render();
+    try {
+      const r = await bridge.playerLevels({ mode: p.mode, sort: p.sort, uploaded: p.uploaded, page, term });
+      p.results = r.levels; p.pages = r.pages;
+      if (!r.levels.length) p.error = 'No levels found';
+    } catch (e) { p.error = e.message; p.results = []; }
+    p.loading = false;
+    render();
+  }
+
+  async function lookupId() {
+    const id = Number((ui.inputs.lvid || '').trim());
+    if (!Number.isInteger(id) || id < 1) { toast('Enter a numeric level ID', 'error'); return; }
+    ui.idLookup = { loading: true, error: null }; render();
+    try {
+      const l = await bridge.levelById(id);
+      ui.idLookup = { loading: false, error: l ? null : 'No level with that ID' };
+      if (l) ui.selected = l;
+    } catch (e) { ui.idLookup = { loading: false, error: e.message }; }
+    render();
+  }
+
   function avatarImg(id) {
     const img = h('img', { class: 'avatar', alt: '' });
     const cached = avatars.get(id);
@@ -145,15 +205,25 @@ export function createOverlay(mp, bridge, tx) {
       const url = c.toDataURL();
       avatars.set(id, url);
       img.src = url;
+      render();
     };
     if (typeof cached === 'string') img.src = cached;
     else if (!avatars.has(id)) { avatars.set(id, null); tx.avatar(id).then(apply).catch(() => {}); }
     return img;
   }
 
+  /** Text box whose contents survive redraws. */
+  function textBox(key, props = {}) {
+    return h('input', {
+      type: 'text', key, value: ui.inputs[key] || '', ...props,
+      onInput: (e) => { ui.inputs[key] = e.target.value; if (props.onInput) props.onInput(e); },
+    });
+  }
+
   // ---- views ------------------------------------------------------------------------------------
-  function header(title) {
+  function header(title, back) {
     return h('header', null,
+      back ? h('button', { class: 'btn ghost', onClick: back }, '← Back') : null,
       h('h1', null, title),
       h('div', { class: 'grow' }),
       h('span', { class: 'ver' }, `v${tx.modVersion || '?'}`),
@@ -161,7 +231,11 @@ export function createOverlay(mp, bridge, tx) {
   }
 
   function browserView() {
-    const code = h('input', { type: 'text', placeholder: 'Lobby code', maxlength: 24 });
+    const joinByCode = () => {
+      const id = parseCode(ui.inputs.code || '');
+      if (!id) return toast('That lobby code does not look right', 'error');
+      act(() => mp.join(id));
+    };
     const type = h('select', { onChange: (e) => mp.setLobbyType(e.target.value) },
       h('option', { value: 'public', selected: mp.prefs.lobbyType === 'public' }, 'Listed (anyone can join)'),
       h('option', { value: 'friends', selected: mp.prefs.lobbyType === 'friends' }, 'Friends only (not listed)'),
@@ -195,22 +269,20 @@ export function createOverlay(mp, bridge, tx) {
         h('div', { class: 'card stack' },
           h('div', { class: 'row between' }, h('h2', null, 'Join a race'),
             h('button', { class: 'btn ghost', disabled: ui.loadingLobbies, onClick: refreshLobbies }, ui.loadingLobbies ? 'Refreshing…' : 'Refresh')),
-          h('div', { class: 'row' }, code,
-            h('button', { class: 'btn', disabled: ui.busy, onClick: () => {
-              const id = parseCode(code.value);
-              if (!id) return toast('That lobby code does not look right', 'error');
-              act(() => mp.join(id));
-            } }, 'Join by code')),
+          h('div', { class: 'row' }, textBox('code', { placeholder: 'Lobby code', maxlength: 24, onEnter: joinByCode }),
+            h('button', { class: 'btn', disabled: ui.busy, onClick: joinByCode }, 'Join by code')),
           list),
         h('div', { class: 'card stack' },
-          h('h2', null, "Steam's Play button"),
-          h('div', { class: 'small muted' }, 'The launcher sets up Happy Wheels in Steam to open Multiplayer (with Steam invites and the overlay). If that was skipped, you can do it by hand: in Steam, right-click Happy Wheels → Properties → Launch Options and paste this. Clear it to go back to the normal game.'),
-          h('div', { class: 'row' }, h('button', { class: 'btn ghost', onClick: async () => {
-            const opt = await tx.steamLaunchOption().catch(() => null);
-            if (!opt) return;
-            await navigator.clipboard?.writeText(opt);
-            toast('Launch option copied. Paste it into Steam.');
-          } }, 'Copy Steam launch option'))),
+          h('h2', null, 'Starting the game'),
+          h('div', { class: 'small muted' }, "Pressing Play on Happy Wheels in Steam opens Multiplayer once the launcher has set it up (it asks the first time). You can also start it from a desktop shortcut."),
+          h('div', { class: 'row' },
+            ui.shortcut
+              ? h('span', { class: 'small muted' }, '✓ Desktop shortcut is set up')
+              : h('button', { class: 'btn ghost', onClick: async () => { ui.shortcut = await tx.desktopShortcut(true).catch(() => false); toast(ui.shortcut ? 'Desktop shortcut created' : 'Could not create the shortcut', ui.shortcut ? 'info' : 'error'); render(); } }, 'Create desktop shortcut'),
+            h('button', { class: 'btn ghost', title: 'For setting it up by hand: Steam → Happy Wheels → Properties → Launch Options', onClick: async () => {
+              const opt = await tx.steamLaunchOption().catch(() => null);
+              if (opt) copy(opt, 'Steam launch option');
+            } }, 'Copy Steam launch option'))),
         h('div', { class: 'small muted' }, 'Unofficial fan-made mod. Not affiliated with Fancy Force or Total Jerkface.')),
     ];
   }
@@ -247,43 +319,29 @@ export function createOverlay(mp, bridge, tx) {
       h('div', { class: 'status' }, statusText));
   }
 
-  function levelPicker(editable) {
-    const lvl = mp.settings.level;
-    const cur = h('div', null,
-      lvl ? h('div', null, h('b', null, lvl.name), h('span', { class: 'small muted' }, `  #${lvl.id}${lvl.forceChar ? ` · ${charName(lvl.character)}` : ''}`))
-        : h('div', { class: 'muted' }, editable ? 'Pick a level below' : 'Host has not picked a level yet'));
-    if (!editable) return h('div', { class: 'card' }, h('div', { class: 'label' }, 'Level'), cur);
-    loadFeatured();
-    const search = h('input', { type: 'text', placeholder: 'Search featured levels', value: ui.levelFilter });
-    const list = h('div', { class: 'levels' });
-    const fill = () => {
-      list.replaceChildren();
-      if (ui.featuredErr === 'loading') return list.append(h('div', { class: 'muted small' }, 'Loading featured levels…'));
-      if (ui.featuredErr) return list.append(h('div', { class: 'error small' }, `Could not load featured levels: ${ui.featuredErr}`));
-      const f = ui.levelFilter.toLowerCase();
-      const items = (ui.featured || []).filter((l) => !f || l.name.toLowerCase().includes(f) || String(l.id) === f).slice(0, 150);
-      for (const l of items) {
-        list.append(h('button', { class: `level ${lvl && lvl.id === l.id ? 'sel' : ''}`, onClick: () => mp.setLevel(l) },
-          h('span', null, l.name), h('span', { class: 'char' }, l.forceChar ? charName(l.character) : 'any character')));
-      }
-      if (!items.length) list.append(h('div', { class: 'muted small' }, 'No matches'));
-    };
-    search.addEventListener('input', () => { ui.levelFilter = search.value; fill(); });
-    fill();
-    const custom = h('input', { type: 'text', placeholder: 'Level ID', maxlength: 12, style: 'width: 110px' });
-    const random = h('button', { class: 'btn ghost', title: 'Pick a featured level this lobby has not raced yet', onClick: () => act(async () => {
-      const pick = await mp.randomLevel();
-      if (pick) toast(`Picked ${pick.name}`);
-    }) }, 'Random');
-    search.style.flex = '1';
+  /** Lobby members we haven't heard from yet (still connecting). */
+  function pendingRow(id) {
+    return h('div', { class: 'player pending', title: 'Waiting for their game to answer. This usually takes a few seconds.' },
+      avatarImg(id),
+      h('div', null, h('div', null, `Player …${id.slice(-4)}`, id === mp.hostId ? h('span', { class: 'badge host' }, 'HOST') : null), h('div', { class: 'status' }, 'connecting…')),
+      h('div', { class: 'status' }, ''));
+  }
+
+  function levelSummary(lvl, editable) {
+    if (!lvl) {
+      return h('div', { class: 'card stack' }, h('div', { class: 'label' }, 'Level'),
+        h('div', { class: 'muted' }, editable ? 'No level picked yet.' : 'The host has not picked a level yet.'),
+        editable ? h('div', { class: 'row' },
+          h('button', { class: 'btn', onClick: () => { ui.view = 'levels'; render(); } }, 'Choose level…'),
+          h('button', { class: 'btn ghost', onClick: () => act(async () => { const p = await mp.randomLevel(); if (p) toast(`Picked ${p.name}`); }) }, 'Random')) : null);
+    }
     return h('div', { class: 'card stack' },
-      h('div', { class: 'label' }, 'Level'), cur, h('div', { class: 'row' }, search, random), list,
-      h('div', { class: 'row' }, h('span', { class: 'small muted' }, 'Or any user level:'), custom,
-        h('button', { class: 'btn ghost', onClick: () => {
-          const id = Number(custom.value.trim());
-          if (!Number.isInteger(id) || id < 1) return toast('Enter a numeric level ID', 'error');
-          mp.setLevel({ id, name: `Level #${id}`, character: 0, forceChar: false });
-        } }, 'Use')));
+      h('div', { class: 'label' }, 'Level'),
+      h('div', null, h('b', null, lvl.name), h('span', { class: 'small muted' }, `  #${lvl.id}`)),
+      h('div', { class: 'small muted' }, [lvl.author ? `by ${lvl.author}` : null, lvl.forceChar ? charName(lvl.character) : 'any character'].filter(Boolean).join(' · ')),
+      editable ? h('div', { class: 'row' },
+        h('button', { class: 'btn', onClick: () => { ui.view = 'levels'; render(); } }, 'Change level…'),
+        h('button', { class: 'btn ghost', title: 'A featured level this lobby has not raced yet', onClick: () => act(async () => { const p = await mp.randomLevel(); if (p) toast(`Picked ${p.name}`); }) }, 'Random')) : null);
   }
 
   function lobbyView() {
@@ -293,10 +351,11 @@ export function createOverlay(mp, bridge, tx) {
     const inRace = ['loading', 'countdown', 'racing'].includes(mp.phase);
     const charLocked = (lvl && lvl.forceChar) || mp.settings.forceCharacter;
 
-    const players = h('div', { class: 'list' }, [...mp.players.values()].map(playerRow));
-    const chatLog = h('div', { class: 'chat-log' }, mp.chat.map((c) => h('div', null, h('span', { class: 'who' }, c.name), c.text)));
-    const chatIn = h('input', { type: 'text', placeholder: 'Say something…', maxlength: 200, style: 'flex:1' });
-    chatIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { mp.sendChat(chatIn.value); chatIn.value = ''; } });
+    const pending = mp.lobby.members.filter((id) => !mp.players.has(id));
+    const players = h('div', { class: 'list' }, [...mp.players.values()].map(playerRow), pending.map(pendingRow));
+    const sendChat = () => { mp.sendChat(ui.inputs.chat || ''); ui.inputs.chat = ''; render(); };
+    const chatLog = h('div', { class: 'chat-log', key: 'chatlog' },
+      mp.chat.length ? mp.chat.map((c) => h('div', null, h('span', { class: 'who' }, c.name), c.text)) : h('div', { class: 'muted small' }, 'No messages yet. Say hi!'));
 
     const charSel = h('select', { disabled: !!charLocked || inRace, onChange: (e) => mp.setCharacter(Number(e.target.value)) },
       charNames().map((n, i) => h('option', { value: i + 1, selected: mp.prefs.character === i + 1 }, n)));
@@ -328,35 +387,142 @@ export function createOverlay(mp, bridge, tx) {
     } else {
       action = h('button', { class: `btn big ${me && me.ready ? 'ghost' : 'green'}`, onClick: () => mp.setReady(!(me && me.ready)) }, me && me.ready ? 'Not ready' : "I'm ready");
     }
+    const controls = raceControls();
 
     return [
       header(mp.settings.name || 'Race lobby'),
-      h('div', { class: 'body' },
+      h('div', { class: 'body', key: 'lobbybody' },
         h('div', { class: 'cols' },
           h('div', { class: 'stack' },
             h('div', { class: 'card stack' },
-              h('div', { class: 'row between' }, h('div', { class: 'label' }, `Players (${mp.players.size})`),
+              h('div', { class: 'row between' }, h('div', { class: 'label' }, `Players (${mp.lobby.members.length})`),
                 h('div', { class: 'row' },
                   h('span', { class: 'small muted' }, 'Code'), h('span', { class: 'code' }, lobbyCode(mp.lobby.id)),
-                  h('button', { class: 'btn ghost', onClick: () => { navigator.clipboard?.writeText(lobbyCode(mp.lobby.id)); toast('Lobby code copied'); } }, 'Copy'))),
+                  h('button', { class: 'btn ghost', onClick: () => copy(lobbyCode(mp.lobby.id), 'Lobby code') }, 'Copy'))),
               players,
               h('div', { class: 'row' },
                 h('button', { class: 'btn', onClick: () => { mp.invite(); toast('If the Steam invite window does not open, send your friends the lobby code instead.'); } }, 'Invite Steam friends'),
                 h('button', { class: 'btn ghost', onClick: () => act(() => mp.leave()) }, 'Leave lobby'))),
-            h('div', { class: 'card stack' }, h('div', { class: 'label' }, 'Chat'), chatLog, h('div', { class: 'row' }, chatIn))),
+            h('div', { class: 'card stack' }, h('div', { class: 'label' }, 'Chat'), chatLog,
+              h('div', { class: 'row' },
+                textBox('chat', { placeholder: 'Say something… (Enter to send)', maxlength: 200, style: 'flex:1', onEnter: sendChat }),
+                h('button', { class: 'btn', onClick: sendChat }, 'Send')))),
           h('div', { class: 'stack' },
             h('div', { class: 'card row between' },
               h('div', { class: 'row' }, h('span', { class: 'small muted' }, 'Your character'), charSel),
               action),
-            levelPicker(hostMode && !inRace),
+            controls ? h('div', { class: 'card row' }, h('span', { class: 'small muted' }, 'Tired of this level?'), controls) : null,
+            levelSummary(lvl, hostMode && !inRace),
             settings,
-            raceControls() ? h('div', { class: 'card row' }, h('span', { class: 'small muted' }, 'Tired of this level?'), raceControls()) : null,
             hostMode && mp.phase === 'results' ? h('button', { class: 'btn ghost', onClick: () => mp.backToLobby() }, 'End race for everyone') : null))),
     ];
   }
 
-  let lastViewKey = '';
-  const SCROLLERS = ['.body', '.levels', '.chat-log'];
+  // ---- level browser (host) -------------------------------------------------------------------
+  function levelRow(l) {
+    const raced = mp.playedLevels.has(l.id);
+    return h('button', { class: `lvrow ${ui.selected && ui.selected.id === l.id ? 'sel' : ''}`, onClick: () => { ui.selected = l; render(); } },
+      h('span', { class: 'n' }, l.name, raced ? h('span', { class: 'raced' }, '  ✓ raced') : null),
+      h('span', { class: 'r' }, stars(l.rating)),
+      h('span', { class: 'm' }, [l.author, l.forceChar ? charName(l.character) : 'any character'].filter(Boolean).join(' · ')),
+      h('span', { class: 'm', style: 'text-align:right' }, l.plays ? `${fmtNum(l.plays)} plays` : ''));
+  }
+
+  function detailsPane() {
+    const l = ui.selected;
+    if (!l) return h('div', { class: 'card details' }, h('div', { class: 'muted' }, 'Pick a level from the list to see its details.'));
+    const idle = mp.phase === 'lobby' || mp.phase === 'results' || mp.phase === 'idle';
+    const use = (start) => {
+      mp.setLevel(l);
+      ui.view = 'main';
+      if (start && idle) { mp.startRace(); toggle(false); } else render();
+      toast(`Level set: ${l.name}`);
+    };
+    return h('div', { class: 'card details stack' },
+      h('h3', null, l.name),
+      h('div', { class: 'small muted' }, `by ${l.author || 'unknown'} · #${l.id}`),
+      h('div', { class: 'stat' },
+        l.rating ? h('span', null, h('b', null, l.rating.toFixed(1)), ` ★ (${fmtNum(l.votes)} votes)`) : null,
+        l.plays ? h('span', null, h('b', null, fmtNum(l.plays)), ' plays') : null,
+        h('span', null, l.forceChar ? `Character: ${charName(l.character)}` : 'Any character'),
+        mp.playedLevels.has(l.id) ? h('span', { class: 'raced' }, '✓ raced in this lobby') : null),
+      l.comments ? h('div', { class: 'desc' }, l.comments) : null,
+      h('div', { class: 'row' },
+        h('button', { class: 'btn green', onClick: () => use(idle) }, idle ? 'Race it now' : 'Use this level'),
+        idle ? h('button', { class: 'btn ghost', onClick: () => use(false) }, 'Set, start later') : null));
+  }
+
+  function levelsView() {
+    const tabs = h('div', { class: 'tabs' },
+      [['featured', 'Featured'], ['player', 'Player levels'], ['id', 'Level ID']].map(([id, label]) =>
+        h('button', { class: `tab ${ui.levelTab === id ? 'on' : ''}`, onClick: () => { ui.levelTab = id; render(); if (id === 'player' && !ui.player.results && !ui.player.loading) loadPlayerLevels(1); } }, label)));
+    let content;
+    if (ui.levelTab === 'featured') {
+      loadFeatured();
+      const f = (ui.inputs.fsearch || '').toLowerCase();
+      const list = h('div', { class: 'lvlist', key: 'featuredlist' });
+      if (ui.featuredErr === 'loading') list.append(h('div', { class: 'muted small' }, 'Loading featured levels…'));
+      else if (ui.featuredErr) list.append(h('div', { class: 'error small' }, `Could not load featured levels: ${ui.featuredErr}`), h('button', { class: 'btn ghost', onClick: () => { ui.featuredErr = null; loadFeatured(); } }, 'Try again'));
+      else {
+        const items = (ui.featured || []).filter((l) => (!f || l.name.toLowerCase().includes(f) || l.author.toLowerCase().includes(f) || String(l.id) === f)
+          && (!ui.featuredChar || (ui.featuredChar === -1 ? !l.forceChar : l.character === ui.featuredChar)));
+        list.append(...items.map(levelRow));
+        if (!items.length) list.append(h('div', { class: 'muted small' }, 'No matches'));
+      }
+      content = [
+        h('div', { class: 'controls' },
+          textBox('fsearch', { placeholder: 'Search featured levels by name or author', onInput: () => render() }),
+          h('select', { onChange: (e) => { ui.featuredChar = Number(e.target.value); render(); } },
+            h('option', { value: 0, selected: ui.featuredChar === 0 }, 'Any character'),
+            h('option', { value: -1, selected: ui.featuredChar === -1 }, 'Players choose'),
+            charNames().map((n, i) => h('option', { value: i + 1, selected: ui.featuredChar === i + 1 }, n))),
+          h('button', { class: 'btn ghost', onClick: () => act(async () => { const p = await mp.randomLevel(); if (p) { ui.selected = p; toast(`Picked ${p.name}`); } }) }, 'Random')),
+        h('div', { class: 'browser' }, list, detailsPane()),
+      ];
+    } else if (ui.levelTab === 'player') {
+      const p = ui.player;
+      const list = h('div', { class: 'lvlist', key: `playerlist-${p.page}` });
+      if (p.loading) list.append(h('div', { class: 'muted small' }, 'Loading levels…'));
+      else if (p.error) list.append(h('div', { class: 'muted small' }, p.error));
+      else if (p.results) list.append(...p.results.map(levelRow));
+      const search = () => loadPlayerLevels(1);
+      content = [
+        h('div', { class: 'controls' },
+          h('select', { onChange: (e) => { p.mode = e.target.value; render(); } },
+            h('option', { value: 'all', selected: p.mode === 'all' }, 'Browse all'),
+            h('option', { value: 'name', selected: p.mode === 'name' }, 'Level name'),
+            h('option', { value: 'author', selected: p.mode === 'author' }, 'Author')),
+          p.mode !== 'all' ? textBox('psearch', { placeholder: p.mode === 'name' ? 'Level name contains…' : 'Author name…', onEnter: search }) : null,
+          h('select', { onChange: (e) => { p.sort = e.target.value; search(); } },
+            [['rating', 'Top rated'], ['plays', 'Most played'], ['newest', 'Newest'], ['oldest', 'Oldest']].map(([v, t]) => h('option', { value: v, selected: p.sort === v }, t))),
+          p.mode === 'all' ? h('select', { onChange: (e) => { p.uploaded = e.target.value; search(); } },
+            [['anytime', 'All time'], ['month', 'This month'], ['week', 'This week'], ['today', 'Today']].map(([v, t]) => h('option', { value: v, selected: p.uploaded === v }, t))) : null,
+          h('button', { class: 'btn', disabled: p.loading, onClick: search }, 'Search')),
+        h('div', { class: 'browser' },
+          h('div', null, list,
+            h('div', { class: 'pager' },
+              h('button', { class: 'btn ghost', disabled: p.loading || p.page <= 1, onClick: () => loadPlayerLevels(p.page - 1) }, '← Previous'),
+              h('span', null, p.results ? `Page ${p.page}${p.pages > 1 ? ` of ${p.pages}` : ''} · ${p.results.length} levels` : ''),
+              h('button', { class: 'btn ghost', disabled: p.loading || p.page >= p.pages, onClick: () => loadPlayerLevels(p.page + 1) }, 'Next →'))),
+          detailsPane()),
+      ];
+    } else {
+      content = [
+        h('div', { class: 'controls' },
+          textBox('lvid', { placeholder: 'Level ID (the number in a level link)', maxlength: 12, onEnter: lookupId }),
+          h('button', { class: 'btn', disabled: ui.idLookup.loading, onClick: lookupId }, ui.idLookup.loading ? 'Looking up…' : 'Look up')),
+        ui.idLookup.error ? h('div', { class: 'error small' }, ui.idLookup.error) : null,
+        detailsPane(),
+      ];
+    }
+    return [
+      header('Choose a level', () => { ui.view = 'main'; render(); }),
+      h('div', { class: 'body', key: 'levelsbody' }, tabs, content),
+    ];
+  }
+
+  // ---- redraw -----------------------------------------------------------------------------------
+  let lastPanelHtml = '';
   function render() {
     // results modal (interactive, so only rebuilt on state changes)
     if (mp.phase !== 'results') ui.resultsHidden = false;
@@ -376,28 +542,30 @@ export function createOverlay(mp, bridge, tx) {
     const inLobby = !!mp.lobby;
     pill.classList.toggle('live', inLobby);
     pill.classList.toggle('compact', !!bridge.session);
-    if (inLobby) pill.append(h('span', { class: 'sub' }, `${mp.players.size} in lobby`));
+    if (inLobby) pill.append(h('span', { class: 'sub' }, `${mp.lobby.members.length} in lobby`));
 
-    // panel (rebuilt only when not typing, to keep focus/text intact)
-    if (!ui.open) { panelLayer.replaceChildren(); lastViewKey = ''; return; }
-    const key = inLobby ? 'lobby' : 'browser';
-    if (isTyping() && key === lastViewKey) return;
-    const sameView = key === lastViewKey;
-    lastViewKey = key;
-    // Rebuilding replaces the scrollable elements, so carry their scroll positions over.
-    const saved = sameView ? SCROLLERS.map((sel) => [...panelLayer.querySelectorAll(sel)].map((el) => ({
-      top: el.scrollTop, atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4,
-    }))) : null;
-    panelLayer.replaceChildren(
-      h('div', { class: 'scrim', onClick: () => toggle(false) }),
-      h('div', { class: 'panel' }, inLobby ? lobbyView() : browserView()));
-    SCROLLERS.forEach((sel, i) => {
-      panelLayer.querySelectorAll(sel).forEach((el, j) => {
-        const s = saved && saved[i][j];
-        if (sel === '.chat-log' && (!s || s.atBottom)) el.scrollTop = el.scrollHeight;
-        else if (s) el.scrollTop = s.top;
-      });
-    });
+    if (!ui.open) { panelLayer.replaceChildren(); lastPanelHtml = ''; return; }
+    if (ui.view === 'levels' && !(inLobby && mp.isHost)) ui.view = 'main';
+    const panel = h('div', { class: 'panel' }, ui.view === 'levels' ? levelsView() : inLobby ? lobbyView() : browserView());
+    const html = panel.outerHTML;
+    if (html === lastPanelHtml) return; // nothing visible changed: keep the live DOM (hover, scroll, focus)
+    lastPanelHtml = html;
+
+    // Swap in the new panel, carrying over scroll positions and the focused text box.
+    const scrollers = new Map();
+    for (const el of panelLayer.querySelectorAll('[data-key]')) scrollers.set(el.dataset.key, { top: el.scrollTop, atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4 });
+    const focused = activeInput();
+    const focus = focused && focused.dataset.key ? { key: focused.dataset.key, start: focused.selectionStart, end: focused.selectionEnd } : null;
+    panelLayer.replaceChildren(h('div', { class: 'scrim', onClick: () => toggle(false) }), panel);
+    for (const el of panelLayer.querySelectorAll('[data-key]')) {
+      const s = scrollers.get(el.dataset.key);
+      if (el.dataset.key === 'chatlog' && (!s || s.atBottom)) el.scrollTop = el.scrollHeight;
+      else if (s) el.scrollTop = s.top;
+    }
+    if (focus) {
+      const el = panelLayer.querySelector(`[data-key="${focus.key}"]`);
+      if (el) { el.focus(); try { el.setSelectionRange(focus.start, focus.end); } catch {} }
+    }
   }
 
   // ---- HUD (runs every animation frame) --------------------------------------------------------
@@ -466,7 +634,7 @@ export function createOverlay(mp, bridge, tx) {
         h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; render(); } }, 'Keep driving'),
         mp.isHost
           ? h('div', { class: 'row' },
-            h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; toggle(true); } }, 'Change level'),
+            h('button', { class: 'btn ghost', onClick: () => { ui.resultsHidden = true; ui.view = 'levels'; toggle(true); } }, 'Choose level'),
             h('button', { class: 'btn', onClick: () => act(async () => {
               const pick = await mp.randomLevel({ start: true });
               if (pick) toast(`Next up: ${pick.name}`);
@@ -524,8 +692,12 @@ export function createOverlay(mp, bridge, tx) {
 
   mp.subscribe((_m, evt) => {
     if (evt && evt.toast) toast(evt.toast, evt.kind);
+    else if (evt && evt.chat) { if (!ui.open) toast(`${evt.chat.name}: ${evt.chat.text}`); }
     else render();
   });
+
+  // Keep the lobby list fresh while it's on screen.
+  setInterval(() => { if (ui.open && !mp.lobby && !ui.loadingLobbies) refreshLobbies(); }, 8000);
   render();
   requestAnimationFrame(hudFrame);
   return { toggle, toast, setRendererGetter };
