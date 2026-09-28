@@ -6,14 +6,26 @@
 #
 # The release is created in one step after the build (not by electron-builder's parallel uploads,
 # which created a second release per tag and broke update downloads).
+#
+# Every installer gets a signed build provenance attestation (Sigstore, via GitHub), so anyone can
+# check that a download was built here from this repository's code:
+#   gh attestation verify HappyWheelsMultiplayer-Setup-x.y.z.exe -R BLUNT-Chief/happywheels-multiplayer
+# This is not Windows code signing: it doesn't change what SmartScreen or antivirus scanners show.
+#
+# Run it by hand (Actions -> Release -> Run workflow) for a dry run: it builds and attests the
+# installer but publishes nothing.
 name: Release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
+  id-token: write          # Sigstore signing certificate for the attestation
+  attestations: write
+  artifact-metadata: write
 
 jobs:
   release:
@@ -27,6 +39,7 @@ jobs:
           cache: npm
 
       - name: Check tag matches package.json version
+        if: github.event_name == 'push'
         shell: bash
         run: |
           pkg="v$(node -p "require('./package.json').version")"
@@ -45,6 +58,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
       - name: Publish release
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,3 +71,8 @@ jobs:
           grep -q "^version: ${version}$" dist/latest.yml || { echo "latest.yml is not for ${version}"; exit 1; }
           gh release create "$GITHUB_REF_NAME" "$installer" "$installer.blockmap" dist/latest.yml \
             --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/HappyWheelsMultiplayer-Setup-*.exe
