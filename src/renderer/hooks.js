@@ -106,58 +106,76 @@ function inspectExports(exp) {
   }
 }
 
-function wrapFactory(id, factory) {
-  if (typeof factory !== 'function' || factory.__hwmp) return factory;
-  const wrapped = function (module, exports, require) {
-    if (require && !libs.webpackRequire) {
-      libs.webpackRequire = require;
-      // Wrap every factory (including the game's own modules) so we can reach their exports later.
-      if (require.m) for (const mid of Object.keys(require.m)) require.m[mid] = wrapFactory(mid, require.m[mid]);
-    }
-    const r = factory.call(this, module, exports, require);
-    if (module) libs.modules.set(id, module);
-    try { inspectExports(module && module.exports); } catch {}
-    return r;
-  };
-  wrapped.__hwmp = true;
-  return wrapped;
+// ---- Access to the game's webpack modules ----------------------------------------------------------
+// The game ships as webpack 5 chunks waiting on a global queue (an array with an obfuscated name),
+// each one [chunkIds, { moduleId: factory }, runtime?]. We find that queue by its contents and add a
+// probe chunk: when webpack processes a chunk it calls the chunk's runtime callback with its own
+// require function. With that, every module factory webpack knows about is swapped for a traced
+// copy, so each module's exports are inspected as the module loads, before the game uses them.
+
+const PROBE_CHUNK_ID = 'hwmp-probe';
+const tracedFactories = new WeakSet();
+const attachedQueues = new WeakSet();
+
+const isModuleTable = (t) => !!t && typeof t === 'object' && !Array.isArray(t)
+  && Object.values(t).every((f) => typeof f === 'function');
+
+const isQueuedChunk = (entry) => Array.isArray(entry) && entry.length >= 2 && Array.isArray(entry[0]) && isModuleTable(entry[1]);
+
+function recordModule(id, module) {
+  if (!module) return;
+  libs.modules.set(id, module);
+  try { inspectExports(module.exports); } catch {}
 }
 
-function wrapChunk(chunk) {
-  if (!Array.isArray(chunk) || !chunk[1] || typeof chunk[1] !== 'object') return;
-  const mods = chunk[1];
-  for (const id of Object.keys(mods)) mods[id] = wrapFactory(id, mods[id]);
-}
-
-function isChunkArray(v) {
-  return Array.isArray(v) && v.length > 0 && Array.isArray(v[0]) && Array.isArray(v[0][0]) && v[0][1] && typeof v[0][1] === 'object';
-}
-
-function hookChunkArray(arr) {
-  if (arr.__hwmp) return;
-  Object.defineProperty(arr, '__hwmp', { value: true });
-  arr.forEach(wrapChunk);
-  // The webpack runtime replaces push() when it boots; keep wrapping lazily-pushed chunks.
-  let realPush = arr.push;
-  Object.defineProperty(arr, 'push', {
-    configurable: true,
-    get() {
-      // Capture the current target: webpack binds the old push as its "parent" before replacing it.
-      const target = realPush;
-      return function (...chunks) { chunks.forEach(wrapChunk); return target.apply(arr, chunks); };
-    },
-    set(fn) { realPush = fn; },
-  });
-}
-
-export function installHooks() {
-  const found = [];
-  for (const k of Object.getOwnPropertyNames(self)) {
-    let v;
-    try { v = self[k]; } catch { continue; }
-    if (isChunkArray(v)) { hookChunkArray(v); found.push(k); }
+function traceFactory(id, factory) {
+  if (typeof factory !== 'function' || tracedFactories.has(factory)) return factory;
+  function traced(module, ...rest) {
+    const result = Reflect.apply(factory, this, [module, ...rest]);
+    recordModule(id, module);
+    return result;
   }
-  return found;
+  tracedFactories.add(traced);
+  return traced;
+}
+
+function traceModuleTable(table) {
+  for (const id of Object.keys(table)) table[id] = traceFactory(id, table[id]);
+}
+
+/** The probe chunk's runtime callback: webpack passes in its require function. */
+function adoptRequire(req) {
+  if (libs.webpackRequire || typeof req !== 'function') return;
+  libs.webpackRequire = req;
+  if (req.m) traceModuleTable(req.m);
+  // If webpack was already running when we got here, some modules have loaded: look at those too.
+  if (req.c) for (const [id, module] of Object.entries(req.c)) recordModule(id, module);
+}
+
+function attachToQueue(queue) {
+  if (attachedQueues.has(queue)) return;
+  attachedQueues.add(queue);
+  for (const chunk of queue) traceModuleTable(chunk[1]);
+  // Every push function assigned to the queue (webpack installs its own when it boots, keeping the
+  // previous one to call on) is wrapped as it's assigned, so chunks arriving later are traced too.
+  const tracing = (push) => function (...chunks) {
+    for (const chunk of chunks) if (isQueuedChunk(chunk)) traceModuleTable(chunk[1]);
+    return push.apply(this, chunks);
+  };
+  let push = tracing(queue.push);
+  Object.defineProperty(queue, 'push', { configurable: true, get: () => push, set: (fn) => { push = tracing(fn); } });
+  queue.push([[PROBE_CHUNK_ID], {}, adoptRequire]);
+}
+
+/** Attaches to the game's chunk queue(s). Returns their global names (empty if none were found). */
+export function installHooks() {
+  const names = Object.getOwnPropertyNames(self).filter((name) => {
+    let value;
+    try { value = self[name]; } catch { return false; }
+    return Array.isArray(value) && value.length > 0 && value.every(isQueuedChunk);
+  });
+  for (const name of names) attachToQueue(self[name]);
+  return names;
 }
 
 // Registry helpers for exploring/locating game modules at runtime.

@@ -104,6 +104,10 @@ Put **HWMP** in the level name so it shows up under **Multiplayer maps**, then c
 - **Chat** is in the lobby panel (Enter sends). Messages that arrive while the panel is closed pop up at the bottom of the screen.
 - **Logs**: `%APPDATA%\HappyWheelsMP\logs\hwmp.log`. Please attach this file to bug reports, from everyone involved. **⚙ → Report a bug** opens a new GitHub issue and the log folder for you.
 
+## Thanks
+
+- [HWML (Happy Wheels Mod Loader)](https://www.nexusmods.com/happywheels/mods/1) by pineapple54, the first mod loader for the Steam version of Happy Wheels.
+
 ---
 
 ## Privacy
