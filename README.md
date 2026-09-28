@@ -125,6 +125,12 @@ Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 
 Releases are built from this repository by GitHub Actions (`.github/workflows/release.yml`); only those builds are signed.
 
+**Verify a download.** Installers released after v0.2.0 come with a signed build provenance attestation (Sigstore, published through GitHub), which proves the file was built by this repository's release workflow from the public source. With the [GitHub CLI](https://cli.github.com):
+
+```
+gh attestation verify HappyWheelsMultiplayer-Setup-x.y.z.exe -R BLUNT-Chief/happywheels-multiplayer
+```
+
 ## How it works (developers)
 
 Happy Wheels on Steam is an Electron app. Its `app.asar` is protected by Electron's asar-integrity and only-load-from-asar fuses, so it can't be patched in place, and patching would also break on every Steam update. Instead the mod is **its own Electron app** (pinned to the game's Electron version) that boots the player's installed copy of the game:
