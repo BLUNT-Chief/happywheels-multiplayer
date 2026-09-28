@@ -146,10 +146,33 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
     try { tx.copyText(text); toast(`${what} copied`); } catch { toast('Could not copy', 'error'); }
   }
 
-  async function act(fn) {
-    if (ui.busy) return;
-    ui.busy = true; render();
-    try { await fn(); } catch (e) { toast(e.message || String(e), 'error'); } finally { ui.busy = false; render(); }
+  // One action of each kind at a time (no double lobby creation), but a slow one, like a level
+  // loading for practice, never blocks the rest of the panel. A click that has to wait says so
+  // instead of silently doing nothing.
+  const busyKeys = new Set();
+  async function act(fn, key = 'main') {
+    if (busyKeys.has(key)) { toast('Still working on that…'); return; }
+    busyKeys.add(key); ui.busy = busyKeys.has('main'); render();
+    try { await fn(); } catch (e) { toast(e.message || String(e), 'error'); } finally { busyKeys.delete(key); ui.busy = busyKeys.has('main'); render(); }
+  }
+
+  /** Leave the lobby. Never waits on other actions; with other players here it asks for a second click. */
+  function leaveLobby() {
+    if (!mp.lobby) return;
+    if (mp.humans().length > 1 && !(ui.confirmLeaveUntil > performance.now())) {
+      ui.confirmLeaveUntil = performance.now() + 4000;
+      render();
+      setTimeout(render, 4100);
+      return;
+    }
+    ui.confirmLeaveUntil = 0;
+    ui.view = 'main';
+    mp.leave().then(() => toast('You left the lobby'), (e) => toast(e.message || String(e), 'error'));
+  }
+
+  function leaveButton() {
+    const confirming = ui.confirmLeaveUntil > performance.now();
+    return h('button', { class: 'btn ghost danger', title: 'Leave this lobby (the race carries on for everyone else)', onClick: leaveLobby }, confirming ? 'Click again to leave' : 'Leave lobby');
   }
 
   async function refreshLobbies() {
@@ -262,6 +285,7 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
       back ? h('button', { class: 'btn ghost', onClick: back }, '← Back') : null,
       h('h1', null, title),
       h('div', { class: 'grow' }),
+      !back && mp.lobby ? leaveButton() : null,
       back ? null : h('button', { class: 'icon', title: 'Your stats and personal bests', onClick: () => { ui.view = 'stats'; render(); } }, '📊'),
       back ? null : h('button', { class: 'icon', title: 'Settings and help', onClick: () => { ui.view = 'settings'; render(); } }, '⚙'),
       h('span', { class: 'ver' }, `v${tx.modVersion || '?'}`),
@@ -340,7 +364,7 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
       return [
         h('button', { class: 'btn', onClick: () => act(async () => { const p = await mp.skipLevel(); if (p) { toast(`Next up: ${p.name}`); toggle(false); } }) }, 'Skip to a random level'),
         h('button', { class: 'btn ghost', onClick: () => { mp.endRaceNow(); toggle(false); } }, 'End race now'),
-        h('button', { class: 'btn ghost', title: 'Everyone leaves the level and goes back to the lobby', onClick: () => mp.backToLobby() }, 'Back to lobby'),
+        h('button', { class: 'btn ghost', title: 'Everyone leaves the level and goes back to the lobby', onClick: () => mp.backToLobby() }, 'Back to lobby (everyone)'),
       ];
     }
     const voted = race.skipVotes.has(mp.self.id);
@@ -484,8 +508,7 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
               mp.botPlayers().length && mp.effectiveRules().aiReason ? h('div', { class: 'small warn' }, `AI racers sit this one out: ${mp.effectiveRules().aiReason}.`) : null,
               botAdder(),
               h('div', { class: 'row' },
-                h('button', { class: 'btn', onClick: () => { mp.invite(); toast('If the Steam invite window does not open, send your friends the lobby code instead.'); } }, 'Invite Steam friends'),
-                h('button', { class: 'btn ghost', onClick: () => act(() => mp.leave()) }, 'Leave lobby'))),
+                h('button', { class: 'btn', onClick: () => { mp.invite(); toast('If the Steam invite window does not open, send your friends the lobby code instead.'); } }, 'Invite Steam friends'))),
             h('div', { class: 'card stack' }, h('div', { class: 'label' }, 'Chat'), chatLog,
               h('div', { class: 'row' },
                 textBox('chat', { placeholder: 'Say something… (Enter to send)', maxlength: 200, style: 'flex:1', onEnter: sendChat }),
@@ -644,10 +667,13 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
     const notes = ui.whatsNew ? CHANGELOG : [];
     patch(modalLayer, notes.length ? whatsNewModal(c, notes, closeWhatsNew) : null);
 
-    // While the game's own pause menu is open during a race, offer skipping the level.
+    // While the game's own pause menu is open in a lobby race, offer skipping the level and leaving.
     const paused = !!(bridge.session && bridge.session.paused);
-    const controls = paused && !ui.open ? raceControls() : null;
-    patch(raceMenuLayer, controls ? h('div', { class: 'race-menu' }, h('span', { class: 't' }, 'Stuck on this level?'), controls) : null);
+    const inLobbyLevel = !!(mp.lobby && mp.race && bridge.raceMode && !(solo && solo.active));
+    const controls = paused && !ui.open && inLobbyLevel ? raceControls() : null;
+    patch(raceMenuLayer, paused && !ui.open && inLobbyLevel
+      ? h('div', { class: 'race-menu' }, controls ? [h('span', { class: 't' }, 'Stuck on this level?'), ...controls] : null, leaveButton())
+      : null);
 
     // pill
     const inLobby = !!mp.lobby;

@@ -248,11 +248,14 @@ export class Multiplayer {
   }
 
   async leave() {
+    // Leaving from inside a race level goes back to the main menu, not on as single-player.
+    const inRaceLevel = !!(this.race && this.bridge.raceMode && this.bridge.session && !(this.solo && this.solo.active));
     this.resetRace(true);
     await this.tx.lobby.leave().catch(() => {});
     this.lobby = null;
     this.players.clear();
     this.phase = 'idle';
+    if (inRaceLevel) this.bridge.returnToMenu();
     this.changed();
   }
 

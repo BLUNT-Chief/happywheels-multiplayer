@@ -268,3 +268,6 @@ input[type=range] { accent-color: var(--blue); width: 170px; }
 .tag.ghostTag { background: rgba(255,211,77,.8); color: #111; }
 .tag.watched { outline: 2px solid var(--blue); }
 .tag.selfbubble { background: rgba(242,112,138,.92); font-weight: bold; }
+
+/* scrollbars: thin and dark everywhere in the overlay (the default light ones stood out) */
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }

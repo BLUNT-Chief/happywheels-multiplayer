@@ -209,8 +209,8 @@ export function detailsExtras(c, l) {
     info.map ? h('div', { class: 'small mapline' }, h('span', { class: 'badge map' }, 'HWMP'), ' ', lines.join(' · ') || 'Made for multiplayer.') : null,
     best != null ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'Your best: '), h('b', null, c.fmtTime(best))) : null,
     h('div', { class: 'row' },
-      idle ? h('button', { class: 'btn ghost', title: best != null ? 'Race a ghost of your best run, on your own' : 'Play it on your own; your best run is saved as a ghost', onClick: () => c.act(async () => { c.toggle(false); await solo.start(l); }) }, 'Practice') : null,
-      idle ? h('button', { class: 'btn ghost', title: 'For map makers: play it with its multiplayer markers and rules shown', onClick: () => c.act(async () => { c.toggle(false); await solo.start(l, { test: true }); }) }, 'Test map') : null,
+      idle ? h('button', { class: 'btn ghost', title: best != null ? 'Race a ghost of your best run, on your own' : 'Play it on your own; your best run is saved as a ghost', onClick: () => c.act(async () => { c.toggle(false); await solo.start(l); }, 'solo') }, 'Practice') : null,
+      idle ? h('button', { class: 'btn ghost', title: 'For map makers: play it with its multiplayer markers and rules shown', onClick: () => c.act(async () => { c.toggle(false); await solo.start(l, { test: true }); }, 'solo') }, 'Test map') : null,
       cupOk ? h('button', { class: 'btn ghost', onClick: () => { if (mp.cupAdd(l)) c.toast(`Added to the cup: ${l.name}`); } }, 'Add to cup') : null),
     !idle ? h('div', { class: 'small muted' }, 'Practice and map tests are available between races.') : null,
   ];
@@ -294,7 +294,7 @@ export function statsView(c) {
             h('span', { class: 'n' }, b.name),
             h('b', null, c.fmtTime(b.ms)),
             h('span', { class: 'small muted' }, new Date(b.at).toLocaleDateString()),
-            h('button', { class: 'btn ghost small-btn', disabled: c.mp.racing(), title: 'Race a ghost of this run', onClick: () => c.act(async () => { c.toggle(false); await c.solo.start({ id: b.levelId, name: b.name, character: b.character, forceChar: false }); }) }, 'Practice'))))
+            h('button', { class: 'btn ghost small-btn', disabled: c.mp.racing(), title: 'Race a ghost of this run', onClick: () => c.act(async () => { c.toggle(false); await c.solo.start({ id: b.levelId, name: b.name, character: b.character, forceChar: false }); }, 'solo') }, 'Practice'))))
           : h('div', { class: 'small muted' }, 'Finish a level (in a race, in practice or in normal play) and your best time and run are saved here.')),
       h('div', { class: 'row' },
         h('button', { class: 'btn ghost', onClick: () => { if (ui.confirmReset) { ui.confirmReset = false; resetStats(); c.toast('Stats reset'); } else ui.confirmReset = true; c.render(); } },
@@ -309,7 +309,7 @@ export function mapHelpView(c) {
   const test = () => {
     const id = Number((ui.inputs.testid || '').trim());
     if (!Number.isInteger(id) || id < 2) { c.toast('Enter the level ID of your map', 'error'); return; }
-    c.act(async () => { c.toggle(false); await c.solo.start({ id, name: `Level ${id}`, character: 0, forceChar: false }, { test: true }); });
+    c.act(async () => { c.toggle(false); await c.solo.start({ id, name: `Level ${id}`, character: 0, forceChar: false }, { test: true }); }, 'solo');
   };
   return [
     c.header('Making multiplayer maps', back),
