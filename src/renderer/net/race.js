@@ -882,6 +882,8 @@ export class Multiplayer {
     this.phase = 'loading';
     this.myVote = null;
     this.playedLevels.add(msg.level.id);
+    const ai = msg.participants.filter(isBotId).length;
+    log.info(`race ${msg.race}: ${msg.level.name || 'level'} (#${msg.level.id}), ${msg.participants.length - ai} player(s)${ai ? ` + ${ai} AI` : ''}, ${rules.mode === 'survival' ? 'survival, ' : ''}collisions ${rules.collisions ? 'on' : 'off'}${rules.fromMap ? ', map rules' : ''}`);
     for (const p of this.players.values()) { p.status = msg.participants.includes(p.id) ? 'loading' : 'spectating'; p.finishMs = null; p.ready = false; }
     const me = this.players.get(this.self.id);
     this.bridge.resetMapProgress(this.humanSlot(msg.participants), { restart: rules.restart });
@@ -1045,13 +1047,16 @@ export class Multiplayer {
     if (race.statsDone) return;
     race.statsDone = true;
     const rows = rankRace(race);
+    const nameOf = (id) => (this.players.get(id) || {}).name || (isBotId(id) ? `AI ${Number(id) - 100}` : 'Player');
+    log.info(`results for race ${race.id} (${race.level.name || race.level.id}): ${rows.map((r) => `${r.place || '-'}. ${nameOf(r.id)} ${r.ms != null ? fmtTime(r.ms) : r.dead ? 'out' : 'DNF'}`).join(', ')}`);
     const mine = rows.find((r) => r.id === this.self.id);
     if (mine) {
       const myIndex = rows.indexOf(mine);
       recordRace({
         place: mine.place, racers: rows.length, finished: mine.ms != null, left: mine.dnf && !mine.dead,
         survival: race.rules.mode === 'survival',
-        aiBehind: rows.slice(myIndex + 1).filter((r) => isBotId(r.id)).length,
+        // AI racers you actually finished (or placed) ahead of; not every AI when nobody got anywhere.
+        aiBehind: mine.place ? rows.slice(myIndex + 1).filter((r) => isBotId(r.id) && !r.dnf).length : 0,
       });
       if (mine.place === 1 && rows.length > 1) this.notify({ won: true });
     }

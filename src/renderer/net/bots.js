@@ -215,6 +215,12 @@ export class BotDriver {
 
   /** Its recorded run is over: let physics bring it to rest, streaming what happens for a while. */
   tickCoast(id, st, now) {
+    if (st.coast.free && now - st.coast.t0 >= COAST_MS) {
+      // Done streaming: hold it where everyone else last saw it, instead of letting it drift on
+      // under physics only in the host's game.
+      st.coast.free = false;
+      this.mp.bridge.setPuppetFree(id, false);
+    }
     const free = st.coast.free && now - st.coast.t0 < COAST_MS;
     if (now - st.sentAt < (free ? COAST_SEND_MS : IDLE_RESEND_MS)) return;
     st.sentAt = now;

@@ -227,7 +227,9 @@ class Puppet {
       this.appliedOnce.add(once);
     }
     const container = this.session.containerSprite;
+    const world = this.session.m_world;
     const beforeKids = new Set(container.children);
+    const beforeBodies = allBodies(world);
     const maps = listenerMaps(this.session);
     const beforeListeners = maps.map((m) => new Set(m.keys()));
     try {
@@ -236,6 +238,12 @@ class Puppet {
       log.warn('puppet event failed', method, e);
     }
     maps.forEach((m, i) => { for (const k of [...m.keys()]) if (!beforeListeners[i].has(k)) m.delete(k); });
+    // Every body the event made is this racer's, jointed or not: a smashed head or chair breaks into
+    // loose pieces, and untagged they would be ordinary debris in our level (hitting us and level
+    // objects, even with collisions off). Tagged, they only rest on the ground like other loose parts.
+    const added = [];
+    for (const b of allBodies(world)) if (!beforeBodies.has(b) && !b.__hwmpPuppet) added.push(...this.trackBody(b));
+    this.refilter(added);
     this.adoptNewBodies();
     this.refreshSlots();
     // Display objects created by the event (gore pieces) belong to this puppet too.
@@ -248,6 +256,7 @@ class Puppet {
     if (this.dead) return;
     this.dead = true;
     const session = this.session;
+    this.stopBleeding();
     for (const m of listenerMaps(session)) for (const s of this.shapes) m.delete(s);
     if (worldAlive && session.m_world) {
       for (const b of this.bodies) { try { if (!b.destroyed) session.m_world.DestroyBody(b); } catch {} }
@@ -260,6 +269,21 @@ class Puppet {
     this.bodies.clear();
     this.shapes.clear();
     this.character = null;
+  }
+
+  /**
+   * Blood flows from a severed limb are particle emitters attached to one of our bodies. Removing
+   * the racer (their restart, checkpoint respawn, leaving) must stop them too: otherwise they keep
+   * pouring from the spot where the body was, a long red line hanging in the air.
+   */
+  stopBleeding() {
+    const pc = this.session && this.session.particleController;
+    if (!pc || !Array.isArray(pc.emitters) || !this.bodies.size) return;
+    for (const e of pc.emitters) {
+      if (!e || typeof e.stopSpewing !== 'function') continue;
+      const ours = Object.keys(e).some((k) => { const v = e[k]; return !!v && typeof v === 'object' && this.bodies.has(v); });
+      if (ours) { try { e.stopSpewing(); } catch {} }
+    }
   }
 
   /** Axis-aligned box around the driven bodies (meters), padded for limb size. */

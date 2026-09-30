@@ -9,6 +9,17 @@ const PROTOCOL_VERSION = 3; // 2: AI racers; 3: map rules, cups, votes, survival
 const LOBBY_MARKER = 'hwmp';
 const MAX_PACKET = 1200; // Steam unreliable limit; larger messages go reliable
 const LobbyType = { private: 0, friends: 1, public: 2, invisible: 3 };
+
+/** Steam's own lobby errors, in words a player can act on. */
+function lobbyError(action, e) {
+  const msg = String((e && e.message) || e || 'unknown error');
+  log.warn(`[hwmp] could not ${action} a lobby: ${msg}`);
+  if (/access denied/i.test(msg)) {
+    return new Error(`Steam didn't allow this account to ${action} a lobby ("access denied"). This can happen with a limited Steam account (one that hasn't spent $5 in the Steam store) or a game borrowed through Family Sharing.${action === 'create' ? " You can try joining a friend's lobby instead." : ''}`);
+  }
+  if (/timeout|no connection|NoConnection/i.test(msg)) return new Error(`Steam didn't answer when trying to ${action} a lobby. Check that Steam is online, then try again.`);
+  return e instanceof Error ? e : new Error(msg);
+}
 const SendType = { Unreliable: 0, UnreliableNoDelay: 1, Reliable: 2, ReliableWithBuffering: 3 };
 const Cb = { LobbyDataUpdate: 4, LobbyChatUpdate: 5, P2PSessionRequest: 6, P2PSessionConnectFail: 7, GameLobbyJoinRequested: 8, PersonaStateChange: 0 };
 
@@ -113,7 +124,10 @@ class SteamNet {
 
   async create({ type = 'friends', maxMembers = 8, data = {} }) {
     this.leave(true);
-    const lobby = await this.client.matchmaking.createLobby(LobbyType[type] ?? LobbyType.friends, Math.max(2, Math.min(16, maxMembers | 0)));
+    let lobby;
+    try {
+      lobby = await this.client.matchmaking.createLobby(LobbyType[type] ?? LobbyType.friends, Math.max(2, Math.min(16, maxMembers | 0)));
+    } catch (e) { throw lobbyError('create', e); }
     this.lobby = lobby;
     log.info(`[hwmp] created lobby ${lobby.id} (${type})`);
     lobby.mergeFullData({
@@ -129,7 +143,10 @@ class SteamNet {
   async join(lobbyId) {
     if (this.lobby && String(this.lobby.id) === String(lobbyId)) return this.lobbyInfo();
     this.leave(true);
-    const lobby = await this.client.matchmaking.joinLobby(BigInt(lobbyId));
+    let lobby;
+    try {
+      lobby = await this.client.matchmaking.joinLobby(BigInt(lobbyId));
+    } catch (e) { throw lobbyError('join', e); }
     const data = lobby.getFullData() || {};
     if (data[LOBBY_MARKER] !== '1') { lobby.leave(); throw new Error('Not a Happy Wheels Multiplayer lobby'); }
     if (data.proto !== String(PROTOCOL_VERSION)) {

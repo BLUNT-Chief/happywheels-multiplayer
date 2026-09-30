@@ -136,9 +136,14 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
   }
 
   function toast(text, kind) {
-    const t = h('div', { class: `toast ${kind || ''}` }, text);
+    // Errors from the main process arrive as "Error invoking remote method 'x': Error: ...".
+    text = String(text).replace(/^Error invoking remote method '[^']*': (?:Error: )?/, '');
+    if (kind === 'error') log.warn(`error shown: ${text}`);
+    // Long messages (mostly errors that explain what to do) stay up long enough to read.
+    const ms = Math.min(12000, Math.max(4000, text.length * 55));
+    const t = h('div', { class: `toast ${kind || ''}`, style: `animation-duration: ${ms}ms` }, text);
     toasts.append(t);
-    setTimeout(() => t.remove(), 4200);
+    setTimeout(() => t.remove(), ms + 200);
     while (toasts.children.length > 4) toasts.firstChild.remove();
   }
 

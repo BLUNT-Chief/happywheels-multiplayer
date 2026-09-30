@@ -2,7 +2,7 @@
 // start line, detect restarts / finishes, and keep remote puppets in sync with the local world.
 
 import { log } from '../log.js';
-import { on as onHook, state as hookState } from '../hooks.js';
+import { on as onHook, state as hookState, libs } from '../hooks.js';
 import { Game } from './locate.js';
 import { takeMapTags } from './mapTags.js';
 import { computeLayout, hookCharacterEvents, characterTree, bodiesOf } from './character.js';
@@ -210,12 +210,21 @@ export const bridge = {
     }
     this.puppets.set(peerId, p);
     for (const ev of entry.events) p.applyEvent(ev.path, ev.method, ev.args);
+    // Rebuilt after our own restart: carry on from where the racer was (no flash at the start
+    // line while the next update arrives), and back under physics if it was (an AI racer
+    // tumbling after a hit or rolling to a stop after its run) once it's been put in place.
+    if (entry.snapshots) { p.snapshots = entry.snapshots; entry.snapshots = null; }
+    if (entry.free) p.freeAfterPose = true;
     return p;
   },
 
   removePuppet(peerId, forget = true) {
     const p = this.puppets.get(peerId);
-    if (p) { p.destroy(!!(this.session && this.session.m_world)); this.puppets.delete(peerId); }
+    if (p) {
+      if (!forget) { const entry = this.puppetSpecs.get(peerId); if (entry) entry.snapshots = p.snapshots; }
+      p.destroy(!!(this.session && this.session.m_world));
+      this.puppets.delete(peerId);
+    }
     if (forget) this.puppetSpecs.delete(peerId);
   },
 
@@ -226,7 +235,9 @@ export const bridge = {
     const entry = this.puppetSpecs.get(peerId);
     if (!entry) return;
     entry.events = [];
+    entry.free = false;
     this.removePuppet(peerId, false);
+    entry.snapshots = null; // from before their restart
     if (this.session) this.spawnPuppet(peerId);
   },
 
@@ -248,8 +259,11 @@ export const bridge = {
 
   /** Host AI driver: let a racer's puppet tumble under physics (free) or follow snapshots again. */
   setPuppetFree(peerId, free, push) {
+    const entry = this.puppetSpecs.get(peerId);
+    if (entry) entry.free = !!free;
     const p = this.puppets.get(peerId);
     if (!p || !this.session || !this.session.m_world || this.session.m_world.m_lock) return null;
+    p.freeAfterPose = false;
     p.setFree(free);
     if (free && push) p.kick(push.nx, push.ny, push.impulse);
     return p;
@@ -330,8 +344,36 @@ function markLocalShapes(session) {
   }
 }
 
+/**
+ * Other racers exist only as copies in our level: they must never be found by the level's own area
+ * searches either. Mines and bombs look for everything around them when they go off (world.Query,
+ * which the contact filter doesn't see) and push it and blow its limbs off, so a mine we set off
+ * would maul the copies of racers who never touched it.
+ */
+function hidePuppetsFromQueries(World) {
+  const P = World && World.prototype;
+  if (!P || P.__hwmpQuery || typeof P.Query !== 'function') return;
+  P.__hwmpQuery = true;
+  const query = P.Query;
+  P.Query = function (aabb, shapes, maxCount) {
+    const n = query.call(this, aabb, shapes, maxCount);
+    if (!bridge.puppets.size || !Array.isArray(shapes) || !(n > 0)) return n;
+    let kept = 0;
+    for (let i = 0; i < n; i++) {
+      const sh = shapes[i];
+      if (!(sh && (sh.__hwmpPuppet || (sh.m_body && sh.m_body.__hwmpPuppet)))) shapes[kept++] = sh;
+    }
+    if (kept !== n) {
+      if (shapes.length === n) shapes.length = kept;
+      else for (let i = kept; i < n; i++) shapes[i] = undefined;
+    }
+    return kept;
+  };
+}
+
 function installContactFilter(session) {
   const world = session.m_world;
+  hidePuppetsFromQueries(libs.b2World);
   if (!world || world.__hwmpFilter) return;
   const def = world.m_contactFilter;
   world.m_contactFilter = makeContactFilter(def, {
@@ -627,7 +669,10 @@ function installGameHooks() {
     const s = bridge.session;
     if (!s || world !== s.m_world || !bridge.puppets.size) return;
     const now = bridge.now();
-    for (const p of bridge.puppets.values()) p.apply(now);
+    for (const p of bridge.puppets.values()) {
+      p.apply(now);
+      if (p.freeAfterPose && p.snapshots.length) { p.freeAfterPose = false; p.setFree(true); }
+    }
     if (bridge.collisions && !bridge.frozen) armCollisions(s);
   });
   onHook('postStep', (world) => {

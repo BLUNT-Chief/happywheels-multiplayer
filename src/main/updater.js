@@ -21,6 +21,7 @@ function createUpdater({ isTrustedSender, log = console }) {
   autoUpdater.logger = log;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.disableWebInstaller = true; // we publish the full installer, never a web installer
   autoUpdater.allowDowngrade = false;
 
   autoUpdater.on('checking-for-update', () => set({ state: 'checking' }));
