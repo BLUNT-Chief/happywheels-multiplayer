@@ -50,12 +50,58 @@ jobs:
       - run: npm ci
 
       - name: Build installer
-        run: npm run dist
+        shell: bash
         env:
-          # Optional code signing (removes the SmartScreen warning). Add these repository secrets
-          # to enable it: a base64 .pfx certificate and its password.
+          # Optional code signing with a .pfx certificate: repository secrets WIN_CSC_LINK (base64
+          # .pfx) and WIN_CSC_KEY_PASSWORD.
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          # Optional code signing with Azure Artifact Signing (docs/SIGNING.md): repository secrets
+          # AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, and repository variables
+          # AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE, AZURE_SIGNING_PUBLISHER.
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SIGN_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          SIGN_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          SIGN_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          SIGN_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
+        run: |
+          args=()
+          if [ -n "$AZURE_CLIENT_SECRET" ] || [ -n "$SIGN_ENDPOINT" ]; then
+            for v in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET SIGN_ENDPOINT SIGN_ACCOUNT SIGN_PROFILE SIGN_PUBLISHER; do
+              [ -n "${!v}" ] || { echo "::error::Azure signing is only partly set up: $v is empty (see docs/SIGNING.md)"; exit 1; }
+            done
+            echo "Signing with Azure Artifact Signing: account $SIGN_ACCOUNT, profile $SIGN_PROFILE, publisher $SIGN_PUBLISHER"
+            args=(
+              "-c.win.azureSignOptions.endpoint=$SIGN_ENDPOINT"
+              "-c.win.azureSignOptions.codeSigningAccountName=$SIGN_ACCOUNT"
+              "-c.win.azureSignOptions.certificateProfileName=$SIGN_PROFILE"
+              "-c.win.azureSignOptions.publisherName=$SIGN_PUBLISHER"
+            )
+            echo "SIGNED_BUILD=1" >> "$GITHUB_ENV"
+          else
+            echo "Azure signing is not set up: building an unsigned installer"
+          fi
+          node scripts/build-renderer.js --prod
+          npx electron-builder --win --publish never "${args[@]}"
+
+      # A signed release must really be signed by the expected publisher: once one is out, installed
+      # copies only accept updates signed with that name.
+      - name: Check the signature
+        if: env.SIGNED_BUILD == '1'
+        shell: pwsh
+        env:
+          SIGN_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
+        run: |
+          $files = @(Get-ChildItem dist\HappyWheelsMultiplayer-Setup-*.exe) + @(Get-Item 'dist\win-unpacked\Happy Wheels Multiplayer.exe')
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -FilePath $f.FullName
+            $cn = ''
+            if ($sig.SignerCertificate) { $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) }
+            Write-Host "$($f.Name): $($sig.Status), signed by '$cn'"
+            if ($sig.Status -ne 'Valid' -or $cn -ne $env:SIGN_PUBLISHER) { throw "$($f.Name) is not validly signed by '$($env:SIGN_PUBLISHER)'" }
+          }
 
       - name: Publish release
         if: github.event_name == 'push'
