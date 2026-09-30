@@ -239,6 +239,9 @@ export class Multiplayer {
     this.settings.name = name;
     const info = await this.tx.lobby.create({ type: this.prefs.lobbyType, maxMembers: 8, data: this.lobbySummary() });
     this.enterLobby(info);
+    if (info.createdAs) {
+      this.toast(`Steam didn't allow a listed lobby for this account, so this one is ${info.createdAs === 'private' ? 'private' : 'friends-only'}: invite people with Invite Steam friends or the lobby code.`);
+    }
   }
 
   async join(lobbyId) {

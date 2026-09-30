@@ -10,16 +10,6 @@ const LOBBY_MARKER = 'hwmp';
 const MAX_PACKET = 1200; // Steam unreliable limit; larger messages go reliable
 const LobbyType = { private: 0, friends: 1, public: 2, invisible: 3 };
 
-/** Steam's own lobby errors, in words a player can act on. */
-function lobbyError(action, e) {
-  const msg = String((e && e.message) || e || 'unknown error');
-  log.warn(`[hwmp] could not ${action} a lobby: ${msg}`);
-  if (/access denied/i.test(msg)) {
-    return new Error(`Steam didn't allow this account to ${action} a lobby ("access denied"). This can happen with a limited Steam account (one that hasn't spent $5 in the Steam store) or a game borrowed through Family Sharing.${action === 'create' ? " You can try joining a friend's lobby instead." : ''}`);
-  }
-  if (/timeout|no connection|NoConnection/i.test(msg)) return new Error(`Steam didn't answer when trying to ${action} a lobby. Check that Steam is online, then try again.`);
-  return e instanceof Error ? e : new Error(msg);
-}
 const SendType = { Unreliable: 0, UnreliableNoDelay: 1, Reliable: 2, ReliableWithBuffering: 3 };
 const Cb = { LobbyDataUpdate: 4, LobbyChatUpdate: 5, P2PSessionRequest: 6, P2PSessionConnectFail: 7, GameLobbyJoinRequested: 8, PersonaStateChange: 0 };
 
@@ -65,6 +55,41 @@ class SteamNet {
     });
     this.pollTimer = setInterval(() => this.poll(), 4);
     this.memberTimer = setInterval(() => { if (this.lobby) this.refreshMembers(); }, 2000);
+    this.license = this.readLicense();
+    log.info(`[hwmp] Steam license: ${this.license.text}`);
+  }
+
+  /** How this account has the game: bug reports about Steam refusing things start here. */
+  readLicense() {
+    const out = { borrowed: false, text: 'unknown' };
+    try {
+      const apps = this.client.apps;
+      const me = this.self()?.steamId;
+      const owner = typeof apps.appOwner === 'function' ? apps.appOwner() : null;
+      const ownerId = owner ? String(owner.steamId64 ?? owner) : '';
+      out.borrowed = !!(me && ownerId && ownerId !== '0' && ownerId !== me);
+      const bits = [out.borrowed ? 'borrowed through Family Sharing' : ownerId ? 'owned by this account' : 'owner unknown'];
+      if (apps.isSubscribedFromFreeWeekend?.()) bits.push('free weekend');
+      if (apps.isVacBanned?.()) bits.push('VAC banned');
+      if (apps.isCybercafe?.()) bits.push('cybercafe');
+      out.text = bits.join(', ');
+    } catch (e) { out.text = `unknown (${e.message})`; }
+    return out;
+  }
+
+  /** Steam's own lobby errors, in words a player can act on. */
+  lobbyError(action, e) {
+    const msg = String((e && e.message) || e || 'unknown error');
+    log.warn(`[hwmp] could not ${action} a lobby: ${msg} (license: ${this.license ? this.license.text : 'unknown'})`);
+    if (/access denied/i.test(msg)) {
+      const start = `Steam didn't allow this account to ${action} a lobby ("access denied").`;
+      if (this.license && this.license.borrowed) {
+        return new Error(`${start} This copy of Happy Wheels is borrowed through Steam Family Sharing, which is the likely reason: the account that owns the game can ${action} one.`);
+      }
+      return new Error(`${start} The most likely reason is a limited Steam account: accounts that have spent less than $5.00 in the Steam store (Happy Wheels on its own is $4.99) can't use some Steam features.${action === 'create' ? " Joining a friend's lobby may still work." : ''}`);
+    }
+    if (/timed out|network connection|failed to connect/i.test(msg)) return new Error(`Steam didn't answer when trying to ${action} a lobby. Check that Steam is online, then try again.`);
+    return e instanceof Error ? e : new Error(msg);
   }
 
   get available() { return this.client !== null; }
@@ -124,12 +149,27 @@ class SteamNet {
 
   async create({ type = 'friends', maxMembers = 8, data = {} }) {
     this.leave(true);
-    let lobby;
-    try {
-      lobby = await this.client.matchmaking.createLobby(LobbyType[type] ?? LobbyType.friends, Math.max(2, Math.min(16, maxMembers | 0)));
-    } catch (e) { throw lobbyError('create', e); }
+    const members = Math.max(2, Math.min(16, maxMembers | 0));
+    // If Steam refuses a listed lobby, try a friends-only and then a private one: some accounts may
+    // only be barred from the more public kinds.
+    const kinds = [type, ...['friends', 'private'].filter((t) => t !== type && LobbyType[t] < (LobbyType[type] ?? LobbyType.friends))];
+    let lobby = null;
+    let createdAs = type;
+    let lastError = null;
+    for (const kind of kinds) {
+      try {
+        lobby = await this.client.matchmaking.createLobby(LobbyType[kind] ?? LobbyType.friends, members);
+        createdAs = kind;
+        break;
+      } catch (e) {
+        lastError = e;
+        if (!/access denied/i.test(String((e && e.message) || e))) break;
+        log.warn(`[hwmp] Steam denied creating a ${kind} lobby`);
+      }
+    }
+    if (!lobby) throw this.lobbyError('create', lastError);
     this.lobby = lobby;
-    log.info(`[hwmp] created lobby ${lobby.id} (${type})`);
+    log.info(`[hwmp] created lobby ${lobby.id} (${createdAs})`);
     lobby.mergeFullData({
       [LOBBY_MARKER]: '1',
       proto: String(PROTOCOL_VERSION),
@@ -137,7 +177,9 @@ class SteamNet {
       ...Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
     });
     this.refreshMembers();
-    return this.lobbyInfo();
+    const info = this.lobbyInfo();
+    if (createdAs !== type) info.createdAs = createdAs;
+    return info;
   }
 
   async join(lobbyId) {
@@ -146,7 +188,7 @@ class SteamNet {
     let lobby;
     try {
       lobby = await this.client.matchmaking.joinLobby(BigInt(lobbyId));
-    } catch (e) { throw lobbyError('join', e); }
+    } catch (e) { throw this.lobbyError('join', e); }
     const data = lobby.getFullData() || {};
     if (data[LOBBY_MARKER] !== '1') { lobby.leave(); throw new Error('Not a Happy Wheels Multiplayer lobby'); }
     if (data.proto !== String(PROTOCOL_VERSION)) {

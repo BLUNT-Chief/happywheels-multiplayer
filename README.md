@@ -97,6 +97,7 @@ Put **HWMP** in the level name so it shows up under **Multiplayer maps**, then c
 
 - **"Steam is not running"**: start Steam, log in, then restart the mod.
 - **Can't see a friend's lobby**: friends-only and private lobbies aren't listed. Ask for the lobby code.
+- **"Steam didn't allow this account to create a lobby" ("access denied")**: Steam itself refused. This usually means a limited Steam account (one that has spent less than $5.00 in the Steam store; Happy Wheels on its own is $4.99) or a copy borrowed through Family Sharing. The mod falls back to a friends-only or private lobby when Steam allows that; otherwise join a friend's lobby, or lift the limit by spending $5 in the Steam store (for example adding $5 to your Steam Wallet).
 - **"Other version"** next to a lobby: one of you is on an older mod version. Restart the mod to finish updating.
 - **A "game v…" badge** next to a player: their Happy Wheels version differs from yours. Update the game in Steam; different versions can have different physics.
 - **"Multiplayer could not start with this version of Happy Wheels"**: a game update changed something the mod relies on. The game still works normally, and a mod update will fix it.
