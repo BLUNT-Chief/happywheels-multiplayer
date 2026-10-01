@@ -2,6 +2,17 @@
 
 export const CHANGELOG = [
   {
+    version: '0.2.2',
+    title: 'Fixes',
+    items: [
+      ['Leaving lobbies', 'Leave lobby is always at the top of the panel, and in the Esc menu during races.'],
+      ['Collisions off means off', "Other racers' broken pieces and your mines and bombs no longer touch them or you."],
+      ['No more red lines', 'Fixed a stream of blood hanging in the air after another racer lost a limb and respawned.'],
+      ['AI racers', 'AI racers keep tumbling or rolling naturally when you restart.'],
+      ['Clearer Steam errors', "If Steam won't create a lobby, the mod explains why and tries a friends-only lobby instead."],
+    ],
+  },
+  {
     version: '0.2.0',
     title: 'Game modes, map tools and more',
     items: [

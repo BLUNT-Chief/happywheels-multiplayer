@@ -13,6 +13,8 @@ function listen(channel, cb) {
 contextBridge.exposeInMainWorld('hwmp', {
   dev: flags.dev === true,
   modVersion: flags.modVersion || '',
+  edition: flags.edition === 'nexus' ? 'nexus' : 'github',
+  nexusUrl: typeof flags.nexusUrl === 'string' ? flags.nexusUrl : '',
   version: () => ipcRenderer.invoke('hwmp:version'),
   steamLaunchOption: () => ipcRenderer.invoke('hwmp:steamLaunchOption'),
   copyText: (text) => ipcRenderer.send('hwmp:copyText', String(text)),

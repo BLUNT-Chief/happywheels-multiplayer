@@ -1,5 +1,5 @@
-# Builds the Windows installer and publishes it to GitHub Releases when a version tag is pushed.
-# Installed copies of the mod pick the new release up automatically (electron-updater).
+# Builds the Windows installers and publishes them when a version tag is pushed.
+# Installed copies of the GitHub edition pick the new release up automatically (electron-updater).
 #
 #   npm version patch        # bumps package.json and creates the vX.Y.Z tag
 #   git push --follow-tags   # triggers this workflow
@@ -7,13 +7,20 @@
 # The release is created in one step after the build (not by electron-builder's parallel uploads,
 # which created a second release per tag and broke update downloads).
 #
+# Two editions are built from the same code:
+#   - the GitHub edition (dist/), which updates itself from GitHub Releases;
+#   - the Nexus Mods edition (dist-nexus/), which never updates itself (Nexus Mods doesn't allow
+#     self-updating executables). It's zipped, attached to the release, and uploaded to the Nexus
+#     Mods page as a new file version when the NEXUSMODS_API_KEY secret and the NEXUS_MOD_ID and
+#     NEXUS_FILE_ID variables are set.
+#
 # Every installer gets a signed build provenance attestation (Sigstore, via GitHub), so anyone can
 # check that a download was built here from this repository's code:
 #   gh attestation verify HappyWheelsMultiplayer-Setup-x.y.z.exe -R BLUNT-Chief/happywheels-multiplayer
 # This is not Windows code signing: it doesn't change what SmartScreen or antivirus scanners show.
 #
 # Run it by hand (Actions -> Release -> Run workflow) for a dry run: it builds and attests the
-# installer but publishes nothing.
+# installers but publishes nothing.
 name: Release
 
 on:
@@ -49,7 +56,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Build installer
+      - name: Build installers
         shell: bash
         env:
           # Optional code signing with a .pfx certificate: repository secrets WIN_CSC_LINK (base64
@@ -66,6 +73,7 @@ jobs:
           SIGN_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
           SIGN_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
           SIGN_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
+          NEXUS_MOD_ID: ${{ vars.NEXUS_MOD_ID }}
         run: |
           args=()
           if [ -n "$AZURE_CLIENT_SECRET" ] || [ -n "$SIGN_ENDPOINT" ]; then
@@ -81,10 +89,30 @@ jobs:
             )
             echo "SIGNED_BUILD=1" >> "$GITHUB_ENV"
           else
-            echo "Azure signing is not set up: building an unsigned installer"
+            echo "Azure signing is not set up: building unsigned installers"
           fi
+          version="$(node -p "require('./package.json').version")"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
           node scripts/build-renderer.js --prod
+          # GitHub edition: updates itself from GitHub Releases.
           npx electron-builder --win --publish never "${args[@]}"
+          # Nexus Mods edition: the same app, marked so it never loads the updater.
+          npx electron-builder --win --publish never "${args[@]}" \
+            -c.extraMetadata.hwmpEdition=nexus \
+            "-c.extraMetadata.hwmpNexusModId=$NEXUS_MOD_ID" \
+            -c.directories.output=dist-nexus \
+            -c.nsis.differentialPackage=false \
+            '-c.win.artifactName=HappyWheelsMultiplayer-Setup-${version}-Nexus.${ext}'
+
+      - name: Package the Nexus edition
+        shell: pwsh
+        run: |
+          $exe = "dist-nexus/HappyWheelsMultiplayer-Setup-$env:VERSION-Nexus.exe"
+          if (-not (Test-Path $exe)) { throw "missing build output: $exe" }
+          $zip = "dist-nexus/HappyWheelsMultiplayer-$env:VERSION-Nexus.zip"
+          Compress-Archive -Path $exe -DestinationPath $zip -Force
+          "NEXUS_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-Item $zip | Format-Table Name, Length
 
       # A signed release must really be signed by the expected publisher: once one is out, installed
       # copies only accept updates signed with that name.
@@ -94,12 +122,13 @@ jobs:
         env:
           SIGN_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
         run: |
-          $files = @(Get-ChildItem dist\HappyWheelsMultiplayer-Setup-*.exe) + @(Get-Item 'dist\win-unpacked\Happy Wheels Multiplayer.exe')
+          $files = @(Get-ChildItem dist\HappyWheelsMultiplayer-Setup-*.exe) + @(Get-Item 'dist\win-unpacked\Happy Wheels Multiplayer.exe') +
+                   @(Get-ChildItem dist-nexus\HappyWheelsMultiplayer-Setup-*.exe) + @(Get-Item 'dist-nexus\win-unpacked\Happy Wheels Multiplayer.exe')
           foreach ($f in $files) {
             $sig = Get-AuthenticodeSignature -FilePath $f.FullName
             $cn = ''
             if ($sig.SignerCertificate) { $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) }
-            Write-Host "$($f.Name): $($sig.Status), signed by '$cn'"
+            Write-Host "$($f.FullName): $($sig.Status), signed by '$cn'"
             if ($sig.Status -ne 'Valid' -or $cn -ne $env:SIGN_PUBLISHER) { throw "$($f.Name) is not validly signed by '$($env:SIGN_PUBLISHER)'" }
           }
 
@@ -111,14 +140,52 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           installer="dist/HappyWheelsMultiplayer-Setup-${version}.exe"
-          for f in "$installer" "$installer.blockmap" dist/latest.yml; do
+          for f in "$installer" "$installer.blockmap" dist/latest.yml "$NEXUS_ZIP"; do
             [ -f "$f" ] || { echo "missing build output: $f"; exit 1; }
           done
           grep -q "^version: ${version}$" dist/latest.yml || { echo "latest.yml is not for ${version}"; exit 1; }
-          gh release create "$GITHUB_REF_NAME" "$installer" "$installer.blockmap" dist/latest.yml \
+          gh release create "$GITHUB_REF_NAME" "$installer" "$installer.blockmap" dist/latest.yml "$NEXUS_ZIP" \
             --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
 
       - name: Attest build provenance
         uses: actions/attest@v4
         with:
-          subject-path: dist/HappyWheelsMultiplayer-Setup-*.exe
+          subject-path: |
+            dist/HappyWheelsMultiplayer-Setup-*.exe
+            dist-nexus/HappyWheelsMultiplayer-Setup-*-Nexus.exe
+            dist-nexus/HappyWheelsMultiplayer-*-Nexus.zip
+
+      - name: Prepare the Nexus Mods upload
+        id: nexus
+        shell: bash
+        env:
+          NEXUS_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+          NEXUS_MOD_ID: ${{ vars.NEXUS_MOD_ID }}
+          NEXUS_FILE_ID: ${{ vars.NEXUS_FILE_ID }}
+        run: |
+          node scripts/nexus-changelog.mjs "$VERSION" > nexus-changelog.txt
+          cat nexus-changelog.txt
+          if [ -n "$NEXUS_KEY" ] && [ -n "$NEXUS_MOD_ID" ] && [ -n "$NEXUS_FILE_ID" ]; then
+            echo "upload=1" >> "$GITHUB_OUTPUT"
+            { echo 'changelog<<HWMP_CHANGELOG_EOF'; cat nexus-changelog.txt; echo 'HWMP_CHANGELOG_EOF'; } >> "$GITHUB_OUTPUT"
+          else
+            echo "Nexus Mods upload is not set up (secret NEXUSMODS_API_KEY, variables NEXUS_MOD_ID and NEXUS_FILE_ID): skipping it"
+          fi
+
+      - name: Upload the Nexus edition to Nexus Mods
+        if: github.event_name == 'push' && steps.nexus.outputs.upload == '1'
+        uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23 # v1.0.0-beta.10
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          mod_id: ${{ vars.NEXUS_MOD_ID }}
+          file_id: ${{ vars.NEXUS_FILE_ID }}
+          filename: ${{ env.NEXUS_ZIP }}
+          version: ${{ env.VERSION }}
+          display_name: Happy Wheels Multiplayer ${{ env.VERSION }}
+          description: Windows installer. Needs Happy Wheels on Steam. New versions are posted on this page; everyone in a lobby needs the same version.
+          category: main
+          archive_existing_version: true
+          update_mod_version: true
+          allow_mod_manager_download: false
+          primary_mod_manager_download: false
+          changelog: ${{ steps.nexus.outputs.changelog }}

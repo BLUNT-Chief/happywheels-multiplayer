@@ -293,7 +293,7 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
       !back && mp.lobby ? leaveButton() : null,
       back ? null : h('button', { class: 'icon', title: 'Your stats and personal bests', onClick: () => { ui.view = 'stats'; render(); } }, '📊'),
       back ? null : h('button', { class: 'icon', title: 'Settings and help', onClick: () => { ui.view = 'settings'; render(); } }, '⚙'),
-      h('span', { class: 'ver' }, `v${tx.modVersion || '?'}`),
+      h('span', { class: 'ver', title: tx.edition === 'nexus' ? 'Nexus Mods edition: new versions are on the Nexus Mods page' : '' }, `v${tx.modVersion || '?'}${tx.edition === 'nexus' ? ' · Nexus' : ''}`),
       h('button', { class: 'close', title: 'Close (Esc)', onClick: () => toggle(false) }, '×'));
   }
 
@@ -321,7 +321,11 @@ export function createOverlay(mp, bridge, tx, { solo = null } = {}) {
           h('div', { class: 'small muted' }, `${l.members.length}${l.limit ? `/${l.limit}` : ''} players`),
           l.compatible
             ? h('button', { class: 'btn', disabled: ui.busy, onClick: () => act(() => mp.join(l.id)) }, 'Join')
-            : h('span', { class: 'small error', title: `Lobby runs mod ${d.modVersion || '?'}` }, 'Other version')));
+            : tx.edition === 'nexus' && tx.nexusUrl
+              ? h('div', { class: 'row', style: 'gap:6px' },
+                h('span', { class: 'small error', title: `Lobby runs mod ${d.modVersion || '?'}` }, 'Other version'),
+                h('button', { class: 'btn ghost small-btn', title: 'Players need the same version. New versions are on the Nexus Mods page.', onClick: () => tx.openExternal(tx.nexusUrl) }, 'Get update'))
+              : h('span', { class: 'small error', title: `Lobby runs mod ${d.modVersion || '?'}` }, 'Other version')));
       }
     }
     return [

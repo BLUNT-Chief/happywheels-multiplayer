@@ -21,6 +21,19 @@ const DEV = IS_DEV_BUILD && process.argv.includes('--hwmp-dev');
 const ENV = (k) => (IS_DEV_BUILD ? process.env[k] : undefined); // dev-only switches
 const ROOT = path.join(__dirname, '..', '..');
 const MOD_VERSION = app.getVersion();
+// Which build this is, set when the installer is built: 'github' updates itself from GitHub
+// Releases; 'nexus' never updates itself (Nexus Mods doesn't allow self-updating executables), so
+// new versions come from the Nexus Mods page instead.
+const { EDITION, NEXUS_URL } = (() => {
+  let meta = {};
+  if (IS_DEV_BUILD) meta = { hwmpEdition: process.env.HWMP_EDITION, hwmpNexusModId: process.env.HWMP_NEXUS_MOD_ID };
+  else { try { meta = require(path.join(app.getAppPath(), 'package.json')); } catch {} }
+  const id = /^\d+$/.test(String(meta.hwmpNexusModId || '')) ? String(meta.hwmpNexusModId) : '';
+  return {
+    EDITION: meta.hwmpEdition === 'nexus' ? 'nexus' : 'github',
+    NEXUS_URL: `https://www.nexusmods.com/happywheels${id ? `/mods/${id}` : ''}`,
+  };
+})();
 const APP_TITLE = 'Happy Wheels Multiplayer';
 const STEAM_APP_ID = 4705510;
 const GAME_START_TIMEOUT_MS = 90000;
@@ -118,7 +131,7 @@ function main() {
   initLog(path.join(userDataDir, 'logs'));
   // Quitting must always end the process, even if Steam or the overlay hangs during shutdown.
   app.on('before-quit', () => setTimeout(() => { log.warn('[hwmp] forced exit after quit timeout'); app.exit(0); }, 6000).unref());
-  log.info(`[hwmp] ${APP_TITLE} ${MOD_VERSION} starting`);
+  log.info(`[hwmp] ${APP_TITLE} ${MOD_VERSION}${EDITION === 'nexus' ? ' (Nexus edition)' : ''} starting`);
   process.on('uncaughtException', (e) => log.error('[hwmp] uncaught', e));
 
   const multi = ENV('HWMP_MULTI') === '1';
@@ -131,7 +144,7 @@ function main() {
 
   // Transport: Steam lobbies + P2P (default) or the localhost relay for multi-instance testing.
   let transport = null;
-  const steamNet = new SteamNet({ modVersion: MOD_VERSION });
+  const steamNet = new SteamNet({ modVersion: MOD_VERSION, edition: EDITION });
   if (ENV('HWMP_LOCAL_NET') === '1') {
     const { LocalNet } = require('./localNet');
     const local = new LocalNet({ name: ENV('HWMP_NAME') });
@@ -154,7 +167,7 @@ function main() {
     fn(`[page] ${String(message).slice(0, 4000)}`);
   });
   ipcMain.on('hwmp:devFlags', (e) => {
-    e.returnValue = { dev: DEV, modVersion: MOD_VERSION };
+    e.returnValue = { dev: DEV, modVersion: MOD_VERSION, edition: EDITION, nexusUrl: NEXUS_URL };
   });
   ipcMain.on('hwmp:openExternal', (e, url) => {
     if (!isTrustedSender(e)) return;
@@ -210,8 +223,9 @@ function main() {
     if (w) { if (w.isMinimized()) w.restore(); w.focus(); }
   });
 
-  const updater = app.isPackaged ? require('./updater').createUpdater({ isTrustedSender, log }) : null;
-  if (!updater) ipcMain.handle('hwmp:update:status', () => ({ state: 'dev' })); // keeps the in-game UI quiet in dev
+  // The Nexus edition never loads the updater at all: no update checks, no downloads.
+  const updater = app.isPackaged && EDITION !== 'nexus' ? require('./updater').createUpdater({ isTrustedSender, log }) : null;
+  if (!updater) ipcMain.handle('hwmp:update:status', () => ({ state: EDITION === 'nexus' ? 'nexus' : 'dev' })); // keeps the in-game UI quiet
 
   if (DEV) {
     app.on('render-process-gone', (_e, _wc, d) => console.error('[hwmp] renderer gone', d));
@@ -324,7 +338,7 @@ async function launch({ userDataDir, profileDir, updater, steamNet, haveLock, se
     ui.step('update', 'done', st.state === 'downloading' ? 'Will finish in the background' : st.state === 'error' ? 'Could not check (offline?) — continuing' : 'You have the latest version');
     updater.startBackground();
   } else {
-    ui.step('update', 'done', 'Skipped (development build)');
+    ui.step('update', 'done', EDITION === 'nexus' ? 'New versions are on the Nexus Mods page' : 'Skipped (development build)');
   }
 
   // 2. Find the game.

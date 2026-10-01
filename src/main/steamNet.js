@@ -14,10 +14,11 @@ const SendType = { Unreliable: 0, UnreliableNoDelay: 1, Reliable: 2, ReliableWit
 const Cb = { LobbyDataUpdate: 4, LobbyChatUpdate: 5, P2PSessionRequest: 6, P2PSessionConnectFail: 7, GameLobbyJoinRequested: 8, PersonaStateChange: 0 };
 
 class SteamNet {
-  constructor({ modVersion }) {
+  constructor({ modVersion, edition = 'github' }) {
     this.client = null;
     this.lobby = null;
     this.modVersion = modVersion;
+    this.edition = edition;
     this.members = new Set();
     this.handles = [];
     this.pollTimer = null;
@@ -193,7 +194,8 @@ class SteamNet {
     if (data[LOBBY_MARKER] !== '1') { lobby.leave(); throw new Error('Not a Happy Wheels Multiplayer lobby'); }
     if (data.proto !== String(PROTOCOL_VERSION)) {
       lobby.leave();
-      throw new Error(`Version mismatch: lobby uses mod ${data.modVersion || '?'}, you have ${this.modVersion}. Restart to update.`);
+      const how = this.edition === 'nexus' ? 'Download the latest version from the Nexus Mods page.' : 'Restart to update.';
+      throw new Error(`Version mismatch: lobby uses mod ${data.modVersion || '?'}, you have ${this.modVersion}. ${how}`);
     }
     this.lobby = lobby;
     log.info(`[hwmp] joined lobby ${lobby.id}`);
