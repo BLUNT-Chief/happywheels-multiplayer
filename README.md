@@ -25,6 +25,8 @@ Race your friends in Happy Wheels. Everyone joins a lobby, the host picks a leve
 
 When it starts, a small launcher window checks for updates, finds your Happy Wheels install, links Steam's Play button (below) and checks Steam, then opens the game. If something is wrong (Steam closed, game not installed, the regular Happy Wheels already open) it tells you and offers a button to fix it.
 
+**Downloaded from Nexus Mods?** That's the *Nexus edition*: the same mod, except it never updates itself (Nexus Mods doesn't allow that). New versions are posted on the Nexus page; download and run the new installer over the old one. Everyone in a lobby needs the same version, and a lobby running a newer version shows **Get update**, which opens the Nexus page.
+
 It installs just for your Windows user (no admin rights needed) and never modifies the Happy Wheels install. It uses the same settings as the regular game (controls, options, fullscreen, login), so nothing resets.
 
 ## Playing
@@ -199,6 +201,7 @@ Dev-only switches (ignored by installed builds): `HWMP_LOCAL_NET=1`, `HWMP_MULTI
 
 1. Add the release's highlights to `src/renderer/ui/changelog.js` (players see them once after updating), with the exact version you're about to release. Then `npm version patch` (or `minor`) and `git push --follow-tags`.
 2. The **Release** GitHub Action builds the installer and publishes it to GitHub Releases. Everyone's installed mod downloads it in the background and asks to restart (or updates on next quit).
+3. The same run builds the **Nexus edition** (no self-updating, as Nexus Mods requires), attaches it to the release as a ZIP, and uploads it to the Nexus Mods page as a new file version through Nexus's official upload action. That needs the repository secret `NEXUSMODS_API_KEY` and the repository variables `NEXUS_MOD_ID` and `NEXUS_FILE_ID`; without them the upload is skipped.
 
 Local build without publishing: `npm run dist` → `dist/HappyWheelsMultiplayer-Setup-x.y.z.exe`.
 
